@@ -1,0 +1,31 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Logs
+*.log
+
+# Runtime outputs (regenerable) — includes RL agent checkpoints (outputs/dqn_branching_model.pth)
+outputs/
+window_logs/
+
+# Collected/generated datasets (regenerable; large)
+# Raw profiling/RL samples land in dataset/{profile,rl}/; split outputs are dataset/*.pkl.
+# (sample_and_split.py stays tracked.)
+dataset/*.pkl
+dataset/profile/
+dataset/rl/
+
+# OS files
+.DS_Store

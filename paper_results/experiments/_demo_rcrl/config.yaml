@@ -1,0 +1,71 @@
+controller:
+  adaptive_window:
+    enabled: true
+    margin: 0.0
+    max_ms: 60000
+    min_ms: 500
+  classifier:
+    feature_set: v2c
+  dynamic_mode: 0
+  mode: rl
+  profile_model_path: ./patrol/models/checkpoints/model.pt
+  profile_seed: 12345
+  ref_dmr: 0.01
+  ref_util: 0.7
+  rl:
+    epsilon: 0.3
+    epsilon_decay: 0.99
+    epsilon_decay_per_window: true
+    epsilon_reset: 0.3
+    explore: budget
+    explore_spread: 0.25
+    hiddens_actions:
+    - 128
+    hiddens_common:
+    - 256
+    - 256
+    hiddens_value:
+    - 128
+    reward: v2
+    reward_util_weight: 3.0
+  safety:
+    conformal_delta: 0.1
+    conformal_min_samples: 20
+    conformal_window: 200
+    dmr_membership: terminate
+    fallback_enabled: true
+    fallback_start_window: 100
+    lambda_init: 0.5
+    lambda_min: 0.0
+    lambda_step_gamma: 0.05
+    loss_mode: releasable
+    mode: rcrl
+    target_miss_alpha: 0.1
+  save_rl_samples: false
+dynamic_config:
+  num_env_changes: 2
+  num_of_target_tasks: 5
+  target_util: 0.0
+exec_time:
+  mu: 2
+  sigma: 0.4
+fcs_ctrl_param:
+  Ga: 1.0
+  kp_m: 0.37
+  kp_u: 0.37
+  similarity: 0.1
+  simliarity_metric: cosine
+output:
+  dir: outputs/window_logs
+qos:
+  level: 10
+  policy: linear
+scheduler:
+  classname: EdfQosScheduler
+  filename: patrol/sim/scheduler.py
+simulation:
+  duration_ms: 4000000
+taskset:
+  path: ./tasksets/taskset_1.txt
+window:
+  size_ms: 5000

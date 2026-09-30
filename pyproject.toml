@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "patrol"
+version = "0.1.0"
+description = "QoS-adaptive real-time scheduling simulator (SimSo-based) with FCS, RL, and profiling controllers."
+requires-python = ">=3.10"
+dependencies = [
+    "simso",
+    "torch",
+    "numpy",
+    "pyyaml",
+    "matplotlib",
+    "tqdm",
+]
+
+[tool.setuptools.packages.find]
+include = ["patrol*"]

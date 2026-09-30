@@ -1,0 +1,32 @@
+{
+  "name": "_demo_rcrl",
+  "collected_at": "2026-09-30T05:23:13",
+  "collector_git_sha": "unknown",
+  "source_run_dir": "/root/PATROL_refactored/outputs/window_logs/runs/scheduler_rl_dyn0_taskset_1_q10_linear_mu2_sig0.4_w5000_d4000000__rcrl__seed12345__20260930-044215-970658",
+  "run_id": "scheduler_rl_dyn0_taskset_1_q10_linear_mu2_sig0.4_w5000_d4000000__rcrl__seed12345__20260930-044215-970658",
+  "run_created_at": "2026-09-30T04:42:15",
+  "note": "DEMO/smoke run (not a paper result): RCRL, static 10-task set, alpha=0.1, warmup=100, seed 12345 \u2014 delete when real results land",
+  "files": [
+    "meta.json",
+    "summary.json",
+    "windows.csv",
+    "config.yaml",
+    "demo_rcrl_visual.png"
+  ],
+  "config": "/tmp/claude-0/-root-PATROL/1a206b54-8c85-4342-980b-53b370f799fb/scratchpad/demo.yaml",
+  "key_metrics": {
+    "loss_mode": "releasable",
+    "target_alpha": 0.1,
+    "realized_miss_rate": 0.014404969908755585,
+    "theorem_bound": 0.14098039215686275,
+    "guarantee_satisfied": true,
+    "fallback_rate": 0.03442622950819672,
+    "eps_carry_max": 0.09900990099009901,
+    "carry_in_precondition_ok": true,
+    "w_sz_min": 6553,
+    "w_sz_max": 6553,
+    "adaptive_window": true,
+    "avg_dmr": 0.028675423054055682,
+    "avg_qos_controllable": 3.863934426229508
+  }
+}

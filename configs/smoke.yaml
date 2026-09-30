@@ -1,0 +1,45 @@
+scheduler:
+  filename: patrol/sim/scheduler.py
+  classname: EdfQosScheduler
+
+simulation:
+  duration_ms: 50000
+
+taskset:
+  path: ./tasksets/taskset_1.txt
+
+qos:
+  level: 10
+  policy: linear
+
+exec_time:
+  mu: 2
+  sigma: 0.4
+
+window:
+  size_ms: 5000
+
+output:
+  dir: outputs/smoke
+
+controller:
+  mode: fcs
+  profile_model_path: ./patrol/models/checkpoints/model.pt
+  dynamic_mode: 0
+  ref_util: 0.9
+  ref_dmr: 0.01
+  profile_seed: 12345
+  save_rl_samples: false
+  enable_profile_fallback: false
+
+dynamic_config:
+  num_env_changes: 2
+  num_of_target_tasks: 5
+  target_util: 0.0
+
+fcs_ctrl_param:
+  simliarity_metric: cosine
+  similarity: 0.1
+  kp_m: 0.37
+  kp_u: 0.37
+  Ga: 1.0

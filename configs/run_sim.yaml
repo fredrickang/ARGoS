@@ -1,0 +1,141 @@
+scheduler:
+  filename: patrol/sim/scheduler.py
+  classname: EdfQosScheduler
+
+simulation:
+  duration_ms: 10000000
+
+taskset:
+  path: ./tasksets/taskset_1.txt
+
+qos:
+  level: 10
+  policy: linear
+
+exec_time:
+  mu: 2
+  sigma: 0.4
+
+window:
+  size_ms: 5000
+
+output:
+  dir: outputs/window_logs
+
+controller:
+  mode: rl # fcs / rl / profile
+  profile_model_path: ./patrol/models/checkpoints/model.pt
+  dynamic_mode: 0 # 0: static  1: ref util change  2: available budget  3: task set
+  ref_util: 0.7
+  ref_dmr: 0.01
+  profile_seed: 12345
+  save_rl_samples: false
+
+  # Miss-predictor classifier feature set:
+  #   v2c = candidate-only load features (est_util from per-job demand + known period).
+  #         Excludes previous-window context so the fallback ladder is separable in
+  #         est_util -> graceful QoS reduction instead of collapsing to drop-all.
+  #   v2  = v2c + previous-window context (higher AUC but backlog term pins the fallback).
+  #   v1  = legacy static-WCET features.
+  classifier:
+    feature_set: v2c
+
+  # RL exploration. epsilon_reset is the value epsilon is bumped to when a sensed env
+  # change fires (reset_only/hvdf adaptation). Set to match the initial epsilon (0.3):
+  # enough re-exploration for the agent to ADAPT to the new dynamics, but far below the
+  # old 0.7 whose violent re-exploration caused post-change saturation spikes and the
+  # 'replace' shield-thrash (fallback 0.45). reset_only also clears the replay buffer.
+  rl:
+    # Initial exploration rate. Swept 0.0..0.9 x 3 seeds on a static 2000-window run
+    # (scripts/run_epsilon_sweep.py): settle time is U-shaped in epsilon -- 0.3 settles
+    # ~2x faster than the extremes, minimises utilisation-saturation spikes (sat_all 0.06),
+    # and gives the best QoS, while util and the Theorem-1 guarantee are epsilon-insensitive.
+    epsilon: 0.3
+    epsilon_reset: 0.3
+    # Anneal epsilon toward 0 every window (not only on explore) so exploration fades after
+    # settling -> low steady-state jitter. Rate 0.99 (NOT the 0.95 agent default): 0.95
+    # annealed too fast and killed the exploration needed to ADAPT after a sensed change
+    # (post-change util wandered, std 0.20). 3-seed on ref_down 0.7->0.5: 0.99 settles both
+    # before AND after the change (pre/post std 0.034/0.023) and tracks the new ref.
+    epsilon_decay_per_window: true
+    epsilon_decay: 0.99
+    explore: budget      # budget-aware exploration from OBSERVED exec estimates (not wcet_table); tracks ref_util
+    explore_spread: 0.25
+    # Reward shaping: v2 = positive-capable, smooth Gaussian util-tracking + always-on
+    # QoS-value term (fixes decoupled_sum's always-<=0 signal + narrow band that gated
+    # QoS off 90% of the time). 3-seed A/B: +15% steady QoS (3.37 vs 2.92), ~1.7x faster
+    # settle, same util tracking, guarantee holds. 'decoupled_sum' = legacy.
+    reward: v2
+    # Reward util:value weight. At 1:1 the QoS-value term keeps util ABOVE a lowered ref
+    # (ref 0.7->0.5 settled at 0.73, not 0.5 -- the agent trades tracking for QoS). w_u=3
+    # tips it toward tracking: ref_down hits 0.48, AND QoS RISES (3.45->4.32 static, tighter
+    # tracking uses the budget more efficiently). Improves every scenario.
+    reward_util_weight: 3.0
+    # Network size. 3-seed sweep (static ref=0.7): [256,256] trunk halves steady-state
+    # util jitter (0.031->0.014) vs the [64,64] default while keeping QoS (3.44) and
+    # settling faster. Bigger net -> smoother tracking, no capacity-driven QoS loss.
+    hiddens_common: [256, 256]
+    hiddens_actions: [128]
+    hiddens_value: [128]
+
+  # RCRL safety guard (risk-controlled RL scheduling).
+  #   mode: rcrl | conformal (legacy baseline) | rt_analytic (analytic baseline) | none
+  # When this block is absent, the legacy flat keys (enable_profile_fallback,
+  # profile_fallback_start_window, profile_safe_*) reconstruct the old conformal behaviour.
+  safety:
+    mode: rcrl
+    target_miss_alpha: 0.1     # alpha : target long-run deadline-miss ratio
+    # Loss the RCRL controller integrates in the lambda update (the quantity Theorem-1 bounds):
+    #   binary     = 1[window had any miss]                             (original)
+    #   fraction   = missed jobs / jobs ACTUALLY released
+    #   releasable = missed jobs / MAX releasable jobs Sum ceil(W/T_i)  (paper Eq. 3, l_miss,k)
+    # All in [0,1] so the bound (B=max(alpha,1-alpha)) is unchanged. Predictor label stays binary.
+    loss_mode: releasable      # binary | fraction | releasable
+    # DMR job-to-window membership (numerator+denominator of the per-window miss ratio):
+    #   terminate (default) = a job counts in the window it TERMINATES in; counted once at
+    #       termination (no carry-out double count); denominator = jobs terminated in the window.
+    #   release             = a job counts in the window it was RELEASED in. Because a missed
+    #       job finishes after its deadline (abort_on_miss=False), the release window's DMR --
+    #       and the RCRL threshold (λ) update that consumes it -- are finalized with a lag.
+    # Per-window EXECUTION time still accrues to the window it ran in either way (utilisation
+    # is unchanged). The miss-predictor label stays binary.
+    dmr_membership: terminate  # terminate | release
+    # Release-mode finalization lag in windows. Omit to auto-derive as max_i ceil(D_i / w)
+    # (D_i = task deadline, w = window). Set an integer to override for experiments.
+    # dmr_lag: 1
+    lambda_step_gamma: 0.05    # gamma : threshold step size
+    lambda_init: 0.5           # lambda_0
+    lambda_min: 0.0            # lower clamp on lambda (null = exact unclamped rule)
+    fallback_enabled: true
+    # Delay the shield so the RL agent learns unshielded first. Swept 0/100/200/300/500
+    # on a static 2000-window run (scripts/run_shield_delay_sweep.py): 200 gives the
+    # highest steady-state utilisation (~0.91) and ~20x fewer shield interventions than
+    # start=0 (fallback rate 0.24 -> 0.012) while the Theorem-1 guarantee still holds.
+    fallback_start_window: 200
+    # conformal baseline knobs (ignored unless mode: conformal)
+    conformal_delta: 0.1
+    conformal_window: 200
+    conformal_min_samples: 20
+
+  # Adaptive window sizing (paper Section VII-C). When enabled, the window length W_k is set to
+  # the SMALLEST value in [min_ms, max_ms] whose max carry-in loss eps_carry = N_k / Sum ceil(W/T_i)
+  # stays below the target miss level alpha (safety.target_miss_alpha), keeping the Lemma-1
+  # precondition (alpha > eps_carry). W is recomputed when the admitted task set changes; a stable
+  # task set keeps a stable window. Disabled => fixed W = window.size_ms.
+  adaptive_window:
+    enabled: true
+    margin: 0.0        # extra headroom below alpha (require eps_carry < alpha*(1-margin))
+    min_ms: 500        # never size below this (responsiveness / decision-frequency floor)
+    max_ms: 60000      # never size above this (clamp; warns if the precondition can't be met)
+
+dynamic_config:
+  num_env_changes: 2
+  num_of_target_tasks: 5
+  target_util: 0.0
+
+fcs_ctrl_param:
+  simliarity_metric: cosine
+  similarity: 0.1
+  kp_m: 0.37
+  kp_u: 0.37
+  Ga: 1.0
