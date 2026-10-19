@@ -36,13 +36,13 @@ OUT_ROOT = os.path.join(ROOT, "outputs", "fig3cases")
 FIG_DIR = os.path.join(ROOT, "paper_results", "figures")
 DURATION_MS = 2_500_000
 
-UNDEREST = [0.1, 0.3, 0.5, 0.7, 0.9]           # Case-2 WCET underestimation levels
+UNDEREST = [0.1, 0.5, 0.9]                      # Case-2 WCET underestimation levels
 ALPHA = 0.1                                     # target for Cases 2 & 3
 
 # --- colors: Case 1 / Case 3 are distinct hues; Case 2 is ONE hue, light->dark by invalidity.
 C1_COLOR = "#0B7A75"   # teal  (hard guarantee)
 C3_COLOR = "#6A3D9A"   # purple (learned)
-C2_RAMP = ["#FED976", "#FEB24C", "#FD8D3C", "#FC4E2A", "#B10026"]  # YlOrRd 10%->90%
+C2_RAMP = ["#FEB24C", "#FC4E2A", "#B10026"]  # YlOrRd 10% / 50% / 90%
 
 
 def cases():
