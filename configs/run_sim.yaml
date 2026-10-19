@@ -87,7 +87,10 @@ controller:
     # Safety score f(x) source (paper Section V-A) -> selects the three-case guarantee:
     #   score: learned    -> MLP miss-prob, f = 1 - p         [Case 3: unavailable profiles]
     #   score: analytical + profile: invalid                  [Case 2: invalid profiles]
-    #   score: analytical + profile: valid  + alpha:0 + lambda_init:0 + mode_change:true [Case 1]
+    #   score: analytical + profile: valid  + alpha:0 + lambda_init:0 + mode_change:true
+    #       + fallback_start_window:0   [Case 1: HARD guarantee -> 0 misses, lambda stays at eta=0]
+    #       (shield from window 0: the analytical test needs no learning warmup, and a warmup
+    #        would let the RL overload and build a job backlog before the shield engages.)
     # analytical score is the EDF utilization margin f = 1 - Sum_i C_i(q_i)/T_i (Eq. 4), with
     # C_i from the valid WCET table (valid) or the estimated/perturbed table (invalid). fmax=1
     # for both scorers (utilization >= 0, miss-prob in [0,1]).
