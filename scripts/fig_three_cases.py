@@ -140,13 +140,18 @@ def _style(ax):
 
 
 def _rollband(y, w=21):
-    """Rolling (mean, min, max) over a centered window — the trend line + its range band."""
+    """Rolling (mean, mean-std, mean+std) over a centered window. The ±1σ band hugs the mean
+    smoothly — unlike a min/max band, which plateaus at extremes and reads as rectangular
+    boxes on spiky 0/1 data. Lower edge clipped at 0."""
     n, half = len(y), w // 2
     m, lo, hi = [], [], []
     for i in range(n):
         a, b = max(0, i - half), min(n, i + half + 1)
         seg = y[a:b]
-        m.append(sum(seg) / len(seg)); lo.append(min(seg)); hi.append(max(seg))
+        mu = sum(seg) / len(seg)
+        var = sum((v - mu) ** 2 for v in seg) / len(seg)
+        sd = var ** 0.5
+        m.append(mu); lo.append(max(0.0, mu - sd)); hi.append(mu + sd)
     return m, lo, hi
 
 
@@ -176,7 +181,7 @@ def plot():
                 ax.spines[sp].set_visible(False)
         axes[-1].set_xlabel("time (s)")
         fig.supylabel(ylabel, fontsize=10)
-        fig.suptitle(f"{metric_title} — {rlabel}  (line = {21}-window mean, band = min–max)",
+        fig.suptitle(f"{metric_title} — {rlabel}  (line = 21-window mean, band = ±1σ)",
                      fontsize=11, y=0.998)
         fig.tight_layout(rect=[0.015, 0, 1, 0.99])
         p = fig_path(key)
