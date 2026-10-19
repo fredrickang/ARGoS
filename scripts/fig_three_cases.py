@@ -167,9 +167,9 @@ def plot():
         fig, axes = plt.subplots(n, 1, figsize=(9, 1.55 * n), sharex=True, sharey=True)
         for ax, (tag, label, color, _) in zip(axes, specs):
             d = data[tag]
-            m, lo, hi = _rollband(d[key])
-            ax.fill_between(d["t"], lo, hi, color=color, alpha=0.20, lw=0)   # range band
-            ax.plot(d["t"], m, color=color, lw=1.6)                           # mean line
+            m, _lo, _hi = _rollband(d[key])
+            ax.plot(d["t"], d[key], color=color, alpha=0.22, lw=0.6)          # raw (true min/max)
+            ax.plot(d["t"], m, color=color, lw=1.7)                           # mean line
             if hline is not None:
                 ax.axhline(hline, color="black", ls="--", lw=0.8, alpha=0.7)
             if ylim:
@@ -181,7 +181,7 @@ def plot():
                 ax.spines[sp].set_visible(False)
         axes[-1].set_xlabel("time (s)")
         fig.supylabel(ylabel, fontsize=10)
-        fig.suptitle(f"{metric_title} — {rlabel}  (line = 21-window mean, band = ±1σ)",
+        fig.suptitle(f"{metric_title} — {rlabel}  (faint = raw per-window, line = 21-window mean)",
                      fontsize=11, y=0.998)
         fig.tight_layout(rect=[0.015, 0, 1, 0.99])
         p = fig_path(key)
