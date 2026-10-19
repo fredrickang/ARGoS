@@ -139,19 +139,19 @@ def _style(ax):
         ax.spines[sp].set_visible(False)
 
 
-def _rollband(y, w=21):
-    """Rolling (mean, mean-std, mean+std) over a centered window. The ±1σ band hugs the mean
-    smoothly — unlike a min/max band, which plateaus at extremes and reads as rectangular
-    boxes on spiky 0/1 data. Lower edge clipped at 0."""
+def _rollband(y, w=21, env_smooth=15):
+    """Rolling mean + a SMOOTH min/max envelope band. The raw rolling min/max plateaus at
+    extremes (boxy on spiky 0/1 data), so the lo/hi envelopes are themselves smoothed with a
+    moving average — the band then reflects the min/max range but hugs the mean smoothly
+    (the shaded-confidence-band look). Lower edge clipped at 0."""
     n, half = len(y), w // 2
     m, lo, hi = [], [], []
     for i in range(n):
         a, b = max(0, i - half), min(n, i + half + 1)
         seg = y[a:b]
-        mu = sum(seg) / len(seg)
-        var = sum((v - mu) ** 2 for v in seg) / len(seg)
-        sd = var ** 0.5
-        m.append(mu); lo.append(max(0.0, mu - sd)); hi.append(mu + sd)
+        m.append(sum(seg) / len(seg)); lo.append(min(seg)); hi.append(max(seg))
+    lo = [max(0.0, v) for v in _smooth(lo, env_smooth)]
+    hi = _smooth(hi, env_smooth)
     return m, lo, hi
 
 
@@ -167,8 +167,8 @@ def plot():
         fig, axes = plt.subplots(n, 1, figsize=(9, 1.55 * n), sharex=True, sharey=True)
         for ax, (tag, label, color, _) in zip(axes, specs):
             d = data[tag]
-            m, _lo, _hi = _rollband(d[key])
-            ax.plot(d["t"], d[key], color=color, alpha=0.22, lw=0.6)          # raw (true min/max)
+            m, lo, hi = _rollband(d[key])
+            ax.fill_between(d["t"], lo, hi, color=color, alpha=0.22, lw=0)    # smooth min/max band
             ax.plot(d["t"], m, color=color, lw=1.7)                           # mean line
             if hline is not None:
                 ax.axhline(hline, color="black", ls="--", lw=0.8, alpha=0.7)
@@ -181,7 +181,7 @@ def plot():
                 ax.spines[sp].set_visible(False)
         axes[-1].set_xlabel("time (s)")
         fig.supylabel(ylabel, fontsize=10)
-        fig.suptitle(f"{metric_title} — {rlabel}  (faint = raw per-window, line = 21-window mean)",
+        fig.suptitle(f"{metric_title} — {rlabel}  (line = 21-window mean, band = smoothed min–max)",
                      fontsize=11, y=0.998)
         fig.tight_layout(rect=[0.015, 0, 1, 0.99])
         p = fig_path(key)
