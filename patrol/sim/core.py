@@ -255,6 +255,11 @@ class SchedulerCoreMixin:
         # job (released under the previous decision) completes, so a raise never piles extra demand
         # on top of a still-running carry-in job. Off by default (Cases 2&3 use ε_carry/adaptive W).
         self._mode_change = bool(_safety_cfg.get('mode_change', False))
+        # Mode-change deferral state: the set of carry-in jobs (live at the last boundary) that
+        # must ALL complete before any deferred QoS increase takes effect, and the pending
+        # per-task target levels waiting on them.
+        self._mc_carryin = set()
+        self._mc_pending = {}
         # Release-mode finalization lag (in windows). If not set explicitly it is derived from
         # the taskset as  max_i ceil( D_i / w ),  w = window size, D_i = task relative deadline
         # -- the largest number of windows a deadline spans, i.e. how long to wait before a
@@ -504,29 +509,30 @@ class SchedulerCoreMixin:
 
         self._update_job_log(job)
 
-        # Mode-change protocol: a deferred QoS increase takes effect once the carry-in job it
-        # was waiting on (released under the previous decision) completes (paper §VI-A).
+        # Mode-change protocol (paper §VI-A): a deferred QoS increase takes effect only once
+        # EVERY carry-in job from the previous decision has completed — a raise must not add
+        # demand while ANY previous-configuration job is still live. So drain the carry-in set
+        # and apply all pending increases together when the last one finishes.
         if getattr(self, "_mode_change", False):
-            tinfo = job.task._task_info
-            if getattr(tinfo, "_carryin_job", None) is job:
-                if getattr(tinfo, "pending_qos", None) is not None:
-                    tinfo.cur_qos = tinfo.pending_qos
-                tinfo.pending_qos = None
-                tinfo._carryin_job = None
+            carryin = self._mc_carryin
+            if carryin and job in carryin:
+                carryin.discard(job)
+                if not carryin and self._mc_pending:
+                    for t_id, target in self._mc_pending.items():
+                        self.tasks[t_id]._task_info.cur_qos = target
+                    self._mc_pending = {}
 
         job.cpu.resched()
 
-    def _active_job_of(self, task):
-        """The task's currently live job (ready or running), if any. Under implicit deadlines
-        a task has at most one active job, so this identifies the carry-in job at a boundary."""
-        for j in self.ready_list:
-            if j.task is task:
-                return j
+    def _live_jobs(self):
+        """All jobs currently live (ready or running). Called at a window boundary, these are
+        exactly the carry-in jobs released under the previous decision."""
+        jobs = list(self.ready_list)
         for cpu in self.processors:
             run = getattr(cpu, "running", None)
-            if run is not None and run.task is task:
-                return run
-        return None
+            if run is not None and run not in jobs:
+                jobs.append(run)
+        return jobs
 
     def schedule(self, cpu):
         # Choose the ready job with the earliest absolute deadline (EDF).

@@ -411,28 +411,25 @@ class RlControllerMixin:
 
     def _apply_mode_change(self, prev_qos_list):
         """Apply the mode-change protocol to the validated decision now in ``cur_qos`` (d̂_k):
-        a QoS decrease (or no change) takes effect immediately; a QoS increase is deferred until
-        the task's carry-in job (released under the previous decision) completes, so the raise
-        never adds demand on top of a still-running carry-in job (paper §VI-A). Deferral lowers
-        the applied QoS only transiently and never above the validated decision, so it preserves
-        the acceptance that SafetyGuard validated.
+        a QoS decrease (or no change) takes effect immediately; every QoS increase is deferred
+        until ALL carry-in jobs from the previous decision complete (paper §VI-A). A raise must
+        not add demand while ANY previous-configuration job is still live — deferring only until
+        the task's *own* carry-in finishes is unsafe, because another task's carry-in may still
+        be running. Deferral only lowers the applied QoS transiently (never above the validated
+        decision), so the acceptance SafetyGuard validated is preserved.
         """
+        carryin = set(self._live_jobs())   # carry-in jobs live at this boundary
+        pending = {}
         for t_id, t in enumerate(self.tasks):
             tinfo = t._task_info
             old_q = prev_qos_list[t_id] if t_id < len(prev_qos_list) else tinfo.cur_qos
             target = tinfo.cur_qos  # validated decision for this window
-            if target <= old_q:
-                tinfo.pending_qos = None       # decrease / unchanged: immediate
-                tinfo._carryin_job = None
-                continue
-            carryin = self._active_job_of(t)   # increase: defer past the carry-in job, if any
-            if carryin is not None:
-                tinfo.cur_qos = old_q
-                tinfo.pending_qos = target
-                tinfo._carryin_job = carryin
-            else:
-                tinfo.pending_qos = None        # no carry-in to wait on: apply now
-                tinfo._carryin_job = None
+            if target > old_q and carryin:
+                tinfo.cur_qos = old_q       # hold at old until all carry-ins drain
+                pending[t_id] = target
+            # decrease / unchanged / no carry-in present: keep target (already applied)
+        self._mc_pending = pending
+        self._mc_carryin = carryin if pending else set()
 
     def _rl_compute_reward(self):
         w = self.w_id - 1
