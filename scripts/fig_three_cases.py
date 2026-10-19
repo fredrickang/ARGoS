@@ -139,51 +139,90 @@ def _style(ax):
         ax.spines[sp].set_visible(False)
 
 
+def _rollband(y, w=21):
+    """Rolling (mean, min, max) over a centered window — the trend line + its range band."""
+    n, half = len(y), w // 2
+    m, lo, hi = [], [], []
+    for i in range(n):
+        a, b = max(0, i - half), min(n, i + half + 1)
+        seg = y[a:b]
+        m.append(sum(seg) / len(seg)); lo.append(min(seg)); hi.append(max(seg))
+    return m, lo, hi
+
+
 def plot():
     os.makedirs(FIG_DIR, exist_ok=True)
-    data = {tag: load_series(tag) for tag, *_ in cases()}
     specs = cases()
+    data = {tag: load_series(tag) for tag, *_ in specs}
+    rlabel = "Eq.1 QoS reward" if REWARD == "paper" else f"{REWARD} util-tracking reward"
 
-    # one combined 3-panel figure + three standalone figures
-    def draw(ax, key, title, ylabel, hline=None, smooth=1):
-        for tag, label, color, _ in specs:
+    # ---- small multiples: one panel per case, rolling-mean line + min/max range band ----
+    def small_multiples(key, metric_title, ylabel, hline=None, ylim=None):
+        n = len(specs)
+        fig, axes = plt.subplots(n, 1, figsize=(9, 1.55 * n), sharex=True, sharey=True)
+        for ax, (tag, label, color, _) in zip(axes, specs):
             d = data[tag]
-            y = _smooth(d[key], smooth) if smooth > 1 else d[key]
-            ax.plot(d["t"], y, color=color, lw=1.4, label=label, alpha=0.9)
-        if hline is not None:
-            ax.axhline(hline, color="black", ls="--", lw=1.0, alpha=0.8)
-            ax.text(ax.get_xlim()[1], hline, f"  α={hline}", va="center", fontsize=8)
-        ax.set_title(title, fontsize=10)
-        ax.set_ylabel(ylabel)
-        _style(ax)
+            m, lo, hi = _rollband(d[key])
+            ax.fill_between(d["t"], lo, hi, color=color, alpha=0.20, lw=0)   # range band
+            ax.plot(d["t"], m, color=color, lw=1.6)                           # mean line
+            if hline is not None:
+                ax.axhline(hline, color="black", ls="--", lw=0.8, alpha=0.7)
+            if ylim:
+                ax.set_ylim(*ylim)
+            ax.text(0.012, 0.86, label, transform=ax.transAxes, fontsize=8,
+                    color=color, fontweight="bold", va="top")
+            ax.grid(True, ls="--", alpha=0.3, lw=0.5)
+            for sp in ("top", "right"):
+                ax.spines[sp].set_visible(False)
+        axes[-1].set_xlabel("time (s)")
+        fig.supylabel(ylabel, fontsize=10)
+        fig.suptitle(f"{metric_title} — {rlabel}  (line = {21}-window mean, band = min–max)",
+                     fontsize=11, y=0.998)
+        fig.tight_layout(rect=[0.015, 0, 1, 0.99])
+        p = fig_path(key)
+        fig.savefig(p, dpi=140); plt.close(fig)
+        print("saved", p)
 
-    panels = [
-        ("util", "Utilization", "actual utilization", None, 1),
-        ("dmr", "Deadline-miss ratio (per window)", "DMR", ALPHA, 1),
-        ("avg_dmr", "Average deadline-miss ratio (cumulative)", "mean DMR", ALPHA, 1),
-    ]
+    small_multiples("util", "Utilization", "actual utilization", ylim=(0, 1.05))
+    small_multiples("dmr", "Deadline-miss ratio (per window)", "DMR", hline=ALPHA, ylim=(0, 1.05))
 
-    # combined
-    fig, axes = plt.subplots(3, 1, figsize=(11, 12), sharex=True)
-    for ax, (key, title, ylab, hl, sm) in zip(axes, panels):
-        draw(ax, key, title, ylab, hl, sm)
+    # ---- cumulative average DMR: overlaid (already smooth; cross-case comparison) ----
+    fig, ax = plt.subplots(figsize=(10, 5))
+    for tag, label, color, _ in specs:
+        ax.plot(data[tag]["t"], data[tag]["avg_dmr"], color=color, lw=1.6, label=label)
+    ax.axhline(ALPHA, color="black", ls="--", lw=1.0, alpha=0.8)
+    ax.text(ax.get_xlim()[1], ALPHA, f"  α={ALPHA}", va="center", fontsize=8)
+    ax.set_title(f"Average deadline-miss ratio (cumulative) — {rlabel}", fontsize=11)
+    ax.set_ylabel("mean DMR"); ax.set_xlabel("time (s)")
+    ax.grid(True, ls="--", alpha=0.3, lw=0.5)
+    for sp in ("top", "right"):
+        ax.spines[sp].set_visible(False)
+    ax.legend(loc="upper right", fontsize=8, ncol=2, framealpha=0.9)
+    fig.tight_layout(); fig.savefig(fig_path("avg_dmr"), dpi=140); plt.close(fig)
+    print("saved", fig_path("avg_dmr"))
+
+    # ---- combined overview: MEAN lines only (no raw jitter), 3 stacked panels ----
+    fig, axes = plt.subplots(3, 1, figsize=(10, 11), sharex=True)
+    combo = [("util", "Utilization", "actual util", None),
+             ("dmr", "Deadline-miss ratio (per window)", "DMR", ALPHA),
+             ("avg_dmr", "Average deadline-miss ratio (cumulative)", "mean DMR", ALPHA)]
+    for ax, (key, title, ylab, hl) in zip(axes, combo):
+        for tag, label, color, _ in specs:
+            y = _rollband(data[tag][key])[0] if key != "avg_dmr" else data[tag][key]
+            ax.plot(data[tag]["t"], y, color=color, lw=1.5, label=label)
+        if hl is not None:
+            ax.axhline(hl, color="black", ls="--", lw=0.9, alpha=0.8)
+            ax.text(ax.get_xlim()[1], hl, f"  α={hl}", va="center", fontsize=8)
+        ax.set_title(title, fontsize=10); ax.set_ylabel(ylab)
+        ax.grid(True, ls="--", alpha=0.3, lw=0.5)
+        for sp in ("top", "right"):
+            ax.spines[sp].set_visible(False)
     axes[0].legend(loc="upper right", fontsize=7, ncol=2, framealpha=0.9)
     axes[-1].set_xlabel("time (s)")
-    rlabel = "Eq.1 QoS reward" if REWARD == "paper" else f"{REWARD} util-tracking reward"
-    fig.suptitle(f"ARGoS three-case comparison (single task set) — {rlabel}", fontsize=13, y=0.995)
-    fig.tight_layout(rect=[0, 0, 1, 0.985])
-    combined = fig_path("combined")
-    fig.savefig(combined, dpi=140); plt.close(fig)
-    print("saved", combined)
-
-    # standalone
-    for key, title, ylab, hl, sm in panels:
-        fig, ax = plt.subplots(figsize=(10, 5))
-        draw(ax, key, title, ylab, hl, sm)
-        ax.legend(loc="upper right", fontsize=8, ncol=2, framealpha=0.9)
-        p = fig_path(key)
-        fig.tight_layout(); fig.savefig(p, dpi=140); plt.close(fig)
-        print("saved", p)
+    fig.suptitle(f"ARGoS three-case comparison — {rlabel}  (mean lines)", fontsize=12, y=0.997)
+    fig.tight_layout(rect=[0, 0, 1, 0.99])
+    fig.savefig(fig_path("combined"), dpi=140); plt.close(fig)
+    print("saved", fig_path("combined"))
 
 
 def main():
