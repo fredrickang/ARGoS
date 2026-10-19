@@ -139,29 +139,17 @@ def _style(ax):
         ax.spines[sp].set_visible(False)
 
 
-def _pct(seg, p):
-    """Linear-interpolated p-th percentile of seg (p in 0..100)."""
-    s = sorted(seg)
-    if len(s) == 1:
-        return s[0]
-    k = (len(s) - 1) * p / 100.0
-    f = int(k); c = min(f + 1, len(s) - 1)
-    return s[f] + (s[c] - s[f]) * (k - f)
-
-
-def _rollband(y, w=21, env_smooth=11, plo=10, phi=90):
-    """Rolling mean + a SMOOTH percentile band (10th–90th by default). A min/max band is
-    dominated by rare spikes on skewed data (e.g. DMR: mostly 0 with occasional 1.0), which
-    balloons the upper edge and leaves the mean looking stranded at the bottom. The 10–90
-    percentile reflects where most windows actually sit, so the mean sits naturally inside the
-    band; edges are moving-average-smoothed for the shaded-band look. Lower edge clipped at 0."""
+def _rollband(y, w=21, env_smooth=15):
+    """Rolling mean + a SMOOTH min/max envelope band. The raw rolling min/max plateaus at
+    extremes (boxy on spiky 0/1 data), so the lo/hi envelopes are themselves smoothed with a
+    moving average — the band then reflects the min/max range but hugs the mean smoothly
+    (the shaded-confidence-band look). Lower edge clipped at 0."""
     n, half = len(y), w // 2
     m, lo, hi = [], [], []
     for i in range(n):
         a, b = max(0, i - half), min(n, i + half + 1)
         seg = y[a:b]
-        m.append(sum(seg) / len(seg))
-        lo.append(_pct(seg, plo)); hi.append(_pct(seg, phi))
+        m.append(sum(seg) / len(seg)); lo.append(min(seg)); hi.append(max(seg))
     lo = [max(0.0, v) for v in _smooth(lo, env_smooth)]
     hi = _smooth(hi, env_smooth)
     return m, lo, hi
@@ -193,7 +181,7 @@ def plot():
                 ax.spines[sp].set_visible(False)
         axes[-1].set_xlabel("time (s)")
         fig.supylabel(ylabel, fontsize=10)
-        fig.suptitle(f"{metric_title} — {rlabel}  (line = 21-window mean, band = 10–90th percentile)",
+        fig.suptitle(f"{metric_title} — {rlabel}  (line = 21-window mean, band = smoothed min–max)",
                      fontsize=11, y=0.998)
         fig.tight_layout(rect=[0.015, 0, 1, 0.99])
         p = fig_path(key)
