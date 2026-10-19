@@ -146,7 +146,7 @@ def plot():
         _style(ax)
 
     panels = [
-        ("util", "Utilization (9-window moving average)", "actual utilization", None, 9),
+        ("util", "Utilization", "actual utilization", None, 1),
         ("dmr", "Deadline-miss ratio (per window)", "DMR", ALPHA, 1),
         ("avg_dmr", "Average deadline-miss ratio (cumulative)", "mean DMR", ALPHA, 1),
     ]
