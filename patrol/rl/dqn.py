@@ -432,6 +432,20 @@ class DQNAgent:
         return reward, info
     
     
+    def compute_reward_qos_gated(self, qos_sum: float, dmr: float | None = None):
+        """Paper reward (Eq. 1): aggregate QoS delivered without a deadline miss.
+
+            r_k = sum_i q_{i,k-1}   if M_{k-1} = 0
+                = 0                 otherwise
+
+        A selected QoS level contributes only when the resulting execution met its
+        timing requirement; otherwise counting it would overstate the service quality
+        actually delivered. No utilization / U_ref term (the paper dropped it). This
+        guides only the RL learning objective; the timing guarantee is SafetyGuard's.
+        """
+        reward = float(qos_sum) if (dmr is None or dmr <= 0.0) else 0.0
+        return reward, {"qos_sum": float(qos_sum), "dmr": dmr, "reward": reward}
+
     def compute_reward_decoupled_sum(
         self,
         util: float,

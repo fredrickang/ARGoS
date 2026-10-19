@@ -240,6 +240,21 @@ class SchedulerCoreMixin:
         # utilization signal is unchanged.
         self._dmr_membership = str((self.data.get('ctrl', {}).get('safety') or {})
                                    .get('dmr_membership', 'terminate')).lower()
+
+        # SafetyGuard scorer (paper §V-A), selecting how the safety score f(x) is produced:
+        #   'learned'    -> MLP miss probability, f = 1 - p  (Case 3, unavailable profiles; default)
+        #   'analytical' -> EDF utilization margin f = 1 - Σ C_i(q_i)/T_i  (Cases 1 & 2)
+        # For 'analytical', safety.profile selects the execution-time table used as C_i(q):
+        #   'valid'   -> ground-truth WCET (self.tasks_wcet_tables)        -> Case 1 (hard guarantee)
+        #   'invalid' -> estimated/possibly-perturbed profile (self.tasks_estimated_tables) -> Case 2
+        _safety_cfg = (self.data.get('ctrl', {}).get('safety') or {})
+        self._safety_score_mode = str(_safety_cfg.get('score', 'learned')).lower()
+        self._safety_profile = str(_safety_cfg.get('profile', 'invalid')).lower()
+        # Mode-change protocol (paper §VI-A), for the Case-1 hard guarantee across windows: a QoS
+        # DECREASE takes effect immediately, while a QoS INCREASE is deferred until the carry-in
+        # job (released under the previous decision) completes, so a raise never piles extra demand
+        # on top of a still-running carry-in job. Off by default (Cases 2&3 use ε_carry/adaptive W).
+        self._mode_change = bool(_safety_cfg.get('mode_change', False))
         # Release-mode finalization lag (in windows). If not set explicitly it is derived from
         # the taskset as  max_i ceil( D_i / w ),  w = window size, D_i = task relative deadline
         # -- the largest number of windows a deadline spans, i.e. how long to wait before a
@@ -425,6 +440,11 @@ class SchedulerCoreMixin:
         its periods change), so a stable task set keeps a stable window."""
         if not getattr(self, "_adaptive_window_enabled", False):
             return
+        # Adaptive sizing targets ε_carry < α, a Cases-2&3 (soft) mechanism. For the Case-1
+        # hard guarantee (α = 0) no finite W satisfies ε_carry < 0; the carry-in transition is
+        # instead handled by the mode-change protocol, so keep the fixed window here.
+        if self._aw_alpha <= 0.0:
+            return
         new_w = self._adaptive_window_length()
         if new_w != self.w_sz:
             eps = self._epsilon_carry(new_w)
@@ -484,7 +504,29 @@ class SchedulerCoreMixin:
 
         self._update_job_log(job)
 
+        # Mode-change protocol: a deferred QoS increase takes effect once the carry-in job it
+        # was waiting on (released under the previous decision) completes (paper §VI-A).
+        if getattr(self, "_mode_change", False):
+            tinfo = job.task._task_info
+            if getattr(tinfo, "_carryin_job", None) is job:
+                if getattr(tinfo, "pending_qos", None) is not None:
+                    tinfo.cur_qos = tinfo.pending_qos
+                tinfo.pending_qos = None
+                tinfo._carryin_job = None
+
         job.cpu.resched()
+
+    def _active_job_of(self, task):
+        """The task's currently live job (ready or running), if any. Under implicit deadlines
+        a task has at most one active job, so this identifies the carry-in job at a boundary."""
+        for j in self.ready_list:
+            if j.task is task:
+                return j
+        for cpu in self.processors:
+            run = getattr(cpu, "running", None)
+            if run is not None and run.task is task:
+                return run
+        return None
 
     def schedule(self, cpu):
         # Choose the ready job with the earliest absolute deadline (EDF).

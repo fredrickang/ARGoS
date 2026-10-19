@@ -61,11 +61,11 @@ controller:
     epsilon_decay: 0.99
     explore: budget      # budget-aware exploration from OBSERVED exec estimates (not wcet_table); tracks ref_util
     explore_spread: 0.25
-    # Reward shaping: v2 = positive-capable, smooth Gaussian util-tracking + always-on
-    # QoS-value term (fixes decoupled_sum's always-<=0 signal + narrow band that gated
-    # QoS off 90% of the time). 3-seed A/B: +15% steady QoS (3.37 vs 2.92), ~1.7x faster
-    # settle, same util tracking, guarantee holds. 'decoupled_sum' = legacy.
-    reward: v2
+    # Reward: 'paper' = Eq. 1, aggregate applied QoS gated on a miss-free window
+    #   (r = sum_i q_{i,k-1} if M_{k-1}=0 else 0); no utilization/U_ref term. This is the
+    #   reward the paper describes and the default.
+    # 'v2' / 'decoupled_sum' = legacy util-tracking rewards (kept for comparison).
+    reward: paper
     # Reward util:value weight. At 1:1 the QoS-value term keeps util ABOVE a lowered ref
     # (ref 0.7->0.5 settled at 0.73, not 0.5 -- the agent trades tracking for QoS). w_u=3
     # tips it toward tracking: ref_down hits 0.48, AND QoS RISES (3.45->4.32 static, tighter
@@ -84,7 +84,21 @@ controller:
   # profile_fallback_start_window, profile_safe_*) reconstruct the old conformal behaviour.
   safety:
     mode: rcrl
-    target_miss_alpha: 0.1     # alpha : target long-run deadline-miss ratio
+    # Safety score f(x) source (paper Section V-A) -> selects the three-case guarantee:
+    #   score: learned    -> MLP miss-prob, f = 1 - p         [Case 3: unavailable profiles]
+    #   score: analytical + profile: invalid                  [Case 2: invalid profiles]
+    #   score: analytical + profile: valid  + alpha:0 + lambda_init:0 + mode_change:true [Case 1]
+    # analytical score is the EDF utilization margin f = 1 - Sum_i C_i(q_i)/T_i (Eq. 4), with
+    # C_i from the valid WCET table (valid) or the estimated/perturbed table (invalid). fmax=1
+    # for both scorers (utilization >= 0, miss-prob in [0,1]).
+    score: learned            # learned | analytical
+    profile: invalid          # (analytical only) valid | invalid
+    fmax: 1.0                 # safety-score upper bound (Lemma 2: lambda <= fmax + gamma*B)
+    # Mode-change protocol (paper Sec. VI-A), for the Case-1 hard guarantee: QoS decrease
+    # immediate, increase deferred until the carry-in job completes. Off for Cases 2 & 3
+    # (they use the eps_carry bound + adaptive window instead).
+    mode_change: false        # true for Case 1
+    target_miss_alpha: 0.1     # alpha : target long-run deadline-miss ratio (set 0 for Case 1)
     # Loss the RCRL controller integrates in the lambda update (the quantity Theorem-1 bounds):
     #   binary     = 1[window had any miss]                             (original)
     #   fraction   = missed jobs / jobs ACTUALLY released

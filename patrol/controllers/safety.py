@@ -5,23 +5,26 @@ decision before it is applied and, if it is rejected, drives the grouped-reducti
 fallback (see ``RlControllerMixin._rl_safe_fallback``). Guards share one interface so
 the controller flow is mode-agnostic:
 
-    accept iff  guard.is_accepted(miss_prob)          # miss_prob = P(deadline miss)
-    per-window  guard.update_on_outcome(loss=..., miss_prob=..., x_state=...)
+    accept iff  guard.is_accepted(score)              # score = safety score f (higher = safer)
+    per-window  guard.update_on_outcome(loss=..., score=..., x_state=...)
+
+All guards operate on a **safety score** ``f`` (higher = safer, upper-bounded by ``fmax``),
+matching the paper's SafetyGuard (§V-A). The controller supplies ``f`` from whichever scorer
+is active — the learned classifier ``f = 1 - miss_prob`` (Case 3, ``fmax = 1``) or the
+analytical EDF utilization margin ``f = 1 - Σ Cᵢ(qᵢ)/Tᵢ`` (Cases 1 & 2, ``fmax = 1``). The
+guard itself is scorer-agnostic.
 
 Modes (``controller.safety.mode``):
 
-* ``rcrl``       — Adaptive Risk Control (Algorithm 1). A single online threshold ``λ``
+* ``rcrl``       — Adaptive Threshold Control (Algorithm 1). A single online threshold ``λ``
                    with a distribution-free long-run guarantee (Theorem 1):
-                   accept iff safety score ``f = 1 - miss_prob ≥ λ``;
-                   update ``λ ← λ + γ (ℓ - α)`` after each window.
+                   accept iff safety score ``f ≥ λ``; update ``λ ← λ + γ (ℓ - α)`` per window.
+                   Works with any scorer (learned or analytical).
 * ``conformal``  — legacy split-conformal quantile guard (kept as a baseline).
-* ``rt_analytic``— analytic EDF util-≤-1 guard (``rt_shielding``); profile-based baseline,
-                   never combined with the learned classifier. Handled specially by the
-                   controller; this module only tags the mode.
+* ``rt_analytic``— standalone analytic EDF util-≤-1 hard cap (``rt_shielding``); legacy
+                   baseline, never combined with ``rcrl``. (For the paper's Cases 1 & 2 use
+                   ``rcrl`` with ``score: analytical`` instead.)
 * ``none``       — no shielding (accept everything, never fall back).
-
-The safety score is the complement of the classifier's miss probability; the classifier
-itself is trained on ``y_miss`` and needs no change.
 """
 
 import logging
@@ -36,15 +39,16 @@ class SafetyGuard:
     mode = "none"
     fallback_enabled = False
     fallback_start_window = 0
+    fmax = 1.0
 
-    def is_accepted(self, miss_prob):
-        """Membership test for the confidence set ``C_λ`` (accept the decision)."""
+    def is_accepted(self, score):
+        """Accept the decision given its safety score ``f`` (higher = safer)."""
         return True
 
-    def needs_fallback(self, miss_prob):
-        return not self.is_accepted(miss_prob)
+    def needs_fallback(self, score):
+        return not self.is_accepted(score)
 
-    def update_on_outcome(self, *, loss, miss_prob=None, x_state=None):
+    def update_on_outcome(self, *, loss, score=None, x_state=None):
         """Called once per window after the applied decision's outcome is observed."""
         return None
 
@@ -65,21 +69,27 @@ class SafetyGuard:
 
 
 class AdaptiveRiskGuard(SafetyGuard):
-    """RCRL adaptive risk control (Algorithm 1).
+    """Adaptive threshold control (Algorithm 1).
 
-    Accept iff ``1 - miss_prob >= λ``; after each window update
-    ``λ ← λ + γ (ℓ - α)`` where ``ℓ`` is the realized deadline-miss loss and ``α`` the
-    target miss level. ``λ`` is deliberately **not** clipped — the Theorem-1 proof only
-    needs ``λ₁ ≥ 0`` and the natural upper bound ``λ ≤ 1 + γ·max(α, 1-α)`` (Lemma 1); a
-    hard clamp would break the guarantee. ``λ`` may go negative (accept everything).
+    Accept iff ``f ≥ λ`` for safety score ``f`` (higher = safer, bounded by ``fmax``);
+    after each window update ``λ ← λ + γ (ℓ - α)`` where ``ℓ`` is the realized deadline-miss
+    loss and ``α`` the target miss level. ``λ`` is deliberately **not** clipped above — the
+    Theorem-1 proof only needs ``λ₁ ∈ [0, fmax]`` and the natural bound
+    ``λ ≤ fmax + γ·max(α, 1-α)`` (Lemma 2); a hard clamp would break the guarantee.
+
+    The scorer is external: ``f = 1 - miss_prob`` for the learned classifier (Case 3) or the
+    analytical EDF utilization margin ``f = 1 - Σ Cᵢ/Tᵢ`` (Cases 1 & 2). For both,
+    ``fmax = 1``. Case 1 (valid profiles, hard guarantee) uses ``α = 0`` and ``λ₁ = η = 0``;
+    Lemma 1 then keeps ``λ ≡ 0``.
     """
 
     mode = "rcrl"
 
     def __init__(self, *, gamma=0.05, alpha=0.1, lambda_init=0.5, lambda_min=0.0,
-                 fallback_enabled=True, fallback_start_window=0):
+                 fmax=1.0, fallback_enabled=True, fallback_start_window=0):
         self.gamma = float(gamma)
         self.alpha = float(alpha)
+        self.fmax = float(fmax)
         self.lambda_init = float(lambda_init)
         self.lam = float(lambda_init)
         # Optional lower clamp on λ. For any λ ≤ 0 the guard accepts everything
@@ -95,10 +105,10 @@ class AdaptiveRiskGuard(SafetyGuard):
     def B(self):
         return max(self.alpha, 1.0 - self.alpha)
 
-    def is_accepted(self, miss_prob):
-        return (1.0 - miss_prob) >= self.lam
+    def is_accepted(self, score):
+        return float(score) >= self.lam
 
-    def update_on_outcome(self, *, loss, miss_prob=None, x_state=None):
+    def update_on_outcome(self, *, loss, score=None, x_state=None):
         self.lam += self.gamma * (float(loss) - self.alpha)
         if self.lambda_min is not None and self.lam < self.lambda_min:
             self.lam = self.lambda_min
@@ -108,13 +118,14 @@ class AdaptiveRiskGuard(SafetyGuard):
         return self.lam
 
     def theorem_bound(self, horizon):
-        # (1/T) Σ ℓ_t ≤ α + (1 + γB) / (γT)   (Theorem 1).
+        # (1/T) Σ ℓ_t ≤ α + (fmax + γB) / (γT)   (Theorem 1, Eq. 14).
         if not horizon or horizon <= 0:
             return None
-        return self.alpha + (1.0 + self.gamma * self.B) / (self.gamma * horizon)
+        return self.alpha + (self.fmax + self.gamma * self.B) / (self.gamma * horizon)
 
     def status(self):
-        return {"lambda": round(self.lam, 4), "gamma": self.gamma, "alpha": self.alpha}
+        return {"lambda": round(self.lam, 4), "gamma": self.gamma,
+                "alpha": self.alpha, "fmax": self.fmax}
 
 
 class ConformalGuard(SafetyGuard):
@@ -142,12 +153,13 @@ class ConformalGuard(SafetyGuard):
     def _threshold(self):
         return float(self._threshold_fn()) if self._threshold_fn else 0.5
 
-    def is_accepted(self, miss_prob):
-        if miss_prob >= self._threshold():
+    def is_accepted(self, score):
+        # score = f = 1 - miss_prob, so miss_prob = 1 - score.
+        if (1.0 - float(score)) >= self._threshold():
             return False
         if self.qhat is None:
             return True
-        return (1.0 - miss_prob) > self.qhat
+        return float(score) > self.qhat
 
     def _recompute_qhat(self):
         if not self.scores:
@@ -159,13 +171,13 @@ class ConformalGuard(SafetyGuard):
         k = max(1, min(k, n))
         self.qhat = scores[k - 1]
 
-    def update_on_outcome(self, *, loss, miss_prob=None, x_state=None):
-        if miss_prob is None:
+    def update_on_outcome(self, *, loss, score=None, x_state=None):
+        if score is None:
             return None
         if loss == 1:
             if x_state is not None:
                 self.calib_samples.append({"x_state": x_state, "y_miss": 1})
-            self.scores.append(float(1.0 - miss_prob))
+            self.scores.append(float(score))
             if self.window:
                 self.scores[:] = self.scores[-self.window:]
             self._recompute_qhat()
@@ -241,6 +253,7 @@ def build_safety_guard(ctrl, *, threshold_fn=None):
         return AdaptiveRiskGuard(
             gamma=safety.get("lambda_step_gamma", 0.05),
             alpha=safety.get("target_miss_alpha", 0.1),
+            fmax=safety.get("fmax", 1.0),
             lambda_init=safety.get("lambda_init", 0.5),
             lambda_min=safety.get("lambda_min", 0.0),
             fallback_enabled=safety.get("fallback_enabled", True),
