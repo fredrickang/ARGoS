@@ -122,6 +122,11 @@ class RlControllerMixin:
         """
         if getattr(self, "_safety_profile", "invalid") == "valid":
             return getattr(self, "tasks_wcet_tables", None) or self.tasks_estimated_tables
+        # invalid: optionally synthesize a controlled underestimate of the true WCET.
+        underest = getattr(self, "_safety_profile_underest", 0.0) or 0.0
+        if underest > 0.0:
+            src = getattr(self, "tasks_wcet_tables", None) or self.tasks_estimated_tables
+            return [[float(c) * (1.0 - underest) for c in row] for row in src]
         return getattr(self, "tasks_estimated_tables", None) or self.tasks_wcet_tables
 
     def _rl_analytical_util(self, action, table):

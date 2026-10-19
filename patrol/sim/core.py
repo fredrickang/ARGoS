@@ -250,6 +250,11 @@ class SchedulerCoreMixin:
         _safety_cfg = (self.data.get('ctrl', {}).get('safety') or {})
         self._safety_score_mode = str(_safety_cfg.get('score', 'learned')).lower()
         self._safety_profile = str(_safety_cfg.get('profile', 'invalid')).lower()
+        # Controlled profile invalidity for Case 2: the analytical profile UNDERESTIMATES the true
+        # WCET by this fraction, i.e. C_profile = (1 - u) * C_true (u=0.2 -> 20% underestimate).
+        # Jobs still execute against the true WCET, so the shield over-admits and the adaptive
+        # threshold must compensate. 0 -> use tasks_estimated_tables as-is.
+        self._safety_profile_underest = float(_safety_cfg.get('profile_underest', 0.0))
         # Mode-change protocol (paper §VI-A), for the Case-1 hard guarantee across windows: a QoS
         # DECREASE takes effect immediately, while a QoS INCREASE is deferred until the carry-in
         # job (released under the previous decision) completes, so a raise never piles extra demand
