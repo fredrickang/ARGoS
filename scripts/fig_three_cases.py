@@ -32,9 +32,21 @@ except Exception as exc:  # pragma: no cover
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASE_CFG = os.path.join(ROOT, "configs", "run_sim.yaml")
-OUT_ROOT = os.path.join(ROOT, "outputs", "fig3cases")
 FIG_DIR = os.path.join(ROOT, "paper_results", "figures")
 DURATION_MS = 2_500_000
+
+# Set by main(): 'paper' = Eq.1 (QoS gated on no-miss); 'v2' = legacy util-tracking reward.
+REWARD = "paper"
+
+
+def out_root():
+    name = "fig3cases" if REWARD == "paper" else f"fig3cases_{REWARD}"
+    return os.path.join(ROOT, "outputs", name)
+
+
+def fig_path(key):
+    pre = "" if REWARD == "paper" else f"{REWARD}_"
+    return os.path.join(FIG_DIR, f"three_cases_{pre}{key}.png")
 
 UNDEREST = [0.1, 0.5, 0.9]                      # Case-2 WCET underestimation levels
 ALPHA = 0.1                                     # target for Cases 2 & 3
@@ -64,7 +76,7 @@ def build_cfg(safety_over, out_dir):
     cfg["simulation"]["duration_ms"] = DURATION_MS
     cfg.setdefault("output", {})["dir"] = out_dir
     cfg["controller"]["dynamic_mode"] = 0
-    cfg["controller"].setdefault("rl", {})["reward"] = "paper"
+    cfg["controller"].setdefault("rl", {})["reward"] = REWARD
     s = cfg["controller"].setdefault("safety", {})
     s["fallback_start_window"] = 0          # shield from window 0 (no backlog warmup)
     s["loss_mode"] = "releasable"
@@ -73,7 +85,7 @@ def build_cfg(safety_over, out_dir):
 
 
 def run_case(tag, safety_over):
-    out_dir = os.path.join(OUT_ROOT, tag)
+    out_dir = os.path.join(out_root(), tag)
     os.makedirs(out_dir, exist_ok=True)
     cfg = build_cfg(safety_over, out_dir)
     cfg_path = os.path.join(out_dir, "config.yaml")
@@ -84,7 +96,7 @@ def run_case(tag, safety_over):
 
 
 def latest_windows_csv(tag):
-    hits = sorted(glob.glob(os.path.join(OUT_ROOT, tag, "runs", "*", "windows.csv")),
+    hits = sorted(glob.glob(os.path.join(out_root(), tag, "runs", "*", "windows.csv")),
                   key=os.path.getmtime)
     return hits[-1] if hits else None
 
@@ -157,9 +169,10 @@ def plot():
         draw(ax, key, title, ylab, hl, sm)
     axes[0].legend(loc="upper right", fontsize=7, ncol=2, framealpha=0.9)
     axes[-1].set_xlabel("time (s)")
-    fig.suptitle("ARGoS three-case comparison (single task set)", fontsize=13, y=0.995)
+    rlabel = "Eq.1 QoS reward" if REWARD == "paper" else f"{REWARD} util-tracking reward"
+    fig.suptitle(f"ARGoS three-case comparison (single task set) — {rlabel}", fontsize=13, y=0.995)
     fig.tight_layout(rect=[0, 0, 1, 0.985])
-    combined = os.path.join(FIG_DIR, "three_cases_combined.png")
+    combined = fig_path("combined")
     fig.savefig(combined, dpi=140); plt.close(fig)
     print("saved", combined)
 
@@ -168,7 +181,7 @@ def plot():
         fig, ax = plt.subplots(figsize=(10, 5))
         draw(ax, key, title, ylab, hl, sm)
         ax.legend(loc="upper right", fontsize=8, ncol=2, framealpha=0.9)
-        p = os.path.join(FIG_DIR, f"three_cases_{key}.png")
+        p = fig_path(key)
         fig.tight_layout(); fig.savefig(p, dpi=140); plt.close(fig)
         print("saved", p)
 
@@ -176,7 +189,11 @@ def plot():
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--plot-only", action="store_true")
+    ap.add_argument("--reward", default="paper", choices=["paper", "v2", "decoupled_sum"],
+                    help="RL reward: paper=Eq.1 (default), v2=legacy util-tracking")
     args = ap.parse_args()
+    global REWARD
+    REWARD = args.reward
     if not args.plot_only:
         for tag, _lbl, _col, over in cases():
             run_case(tag, over)
