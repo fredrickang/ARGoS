@@ -191,13 +191,30 @@ def plot():
     small_multiples("util", "Utilization", "actual utilization", ylim=(0, 1.05))
     small_multiples("dmr", "Deadline-miss ratio (per window)", "DMR", hline=ALPHA, ylim=(0, 1.05))
 
-    # ---- cumulative average DMR: overlaid (already smooth; cross-case comparison) ----
+    # ---- cumulative average DMR + Theorem-1 bound ----
+    # Theorem 1 (Eq.14): (1/K) Σ ℓ_k ≤ α + (f_max + γB)/(γK),  B = max(α,1-α), f_max=1, γ=0.05.
+    # Decays like 1/K toward α. Two groups: α=0.1 (Cases 2 & 3) and α=0 (Case 1).
+    GAMMA, FMAX = 0.05, 1.0
+
+    def theorem_bound(tvals, alpha):
+        B = max(alpha, 1.0 - alpha)
+        return [alpha + (FMAX + GAMMA * B) / (GAMMA * (i + 1)) for i in range(len(tvals))]
+
     fig, ax = plt.subplots(figsize=(10, 5))
     for tag, label, color, _ in specs:
         ax.plot(data[tag]["t"], data[tag]["avg_dmr"], color=color, lw=1.6, label=label)
-    ax.axhline(ALPHA, color="black", ls="--", lw=1.0, alpha=0.8)
+    # bound envelopes (dashed), one per distinct α
+    t01 = data["case3"]["t"]
+    ax.plot(t01, theorem_bound(t01, 0.1), color="0.35", ls=":", lw=1.6,
+            label="Theorem-1 bound (α=0.1)")
+    t00 = data["case1"]["t"]
+    ax.plot(t00, theorem_bound(t00, 0.0), color=C1_COLOR, ls=":", lw=1.4,
+            label="Theorem-1 bound (Case 1, α=0)")
+    ax.axhline(ALPHA, color="black", ls="--", lw=1.0, alpha=0.6)
     ax.text(ax.get_xlim()[1], ALPHA, f"  α={ALPHA}", va="center", fontsize=8)
-    ax.set_title(f"Average deadline-miss ratio (cumulative) — {rlabel}", fontsize=11)
+    ax.set_ylim(0, 1.0)
+    ax.set_title(f"Average deadline-miss ratio (cumulative) vs Theorem-1 bound — {rlabel}",
+                 fontsize=11)
     ax.set_ylabel("mean DMR"); ax.set_xlabel("time (s)")
     ax.grid(True, ls="--", alpha=0.3, lw=0.5)
     for sp in ("top", "right"):
@@ -215,8 +232,14 @@ def plot():
         for tag, label, color, _ in specs:
             y = _rollband(data[tag][key])[0] if key != "avg_dmr" else data[tag][key]
             ax.plot(data[tag]["t"], y, color=color, lw=1.5, label=label)
+        if key == "avg_dmr":   # overlay Theorem-1 bound envelopes
+            ax.plot(t01, theorem_bound(t01, 0.1), color="0.35", ls=":", lw=1.5,
+                    label="Theorem-1 bound (α=0.1)")
+            ax.plot(t00, theorem_bound(t00, 0.0), color=C1_COLOR, ls=":", lw=1.3,
+                    label="bound (Case 1, α=0)")
+            ax.set_ylim(0, 1.0)
         if hl is not None:
-            ax.axhline(hl, color="black", ls="--", lw=0.9, alpha=0.8)
+            ax.axhline(hl, color="black", ls="--", lw=0.9, alpha=0.6)
             ax.text(ax.get_xlim()[1], hl, f"  α={hl}", va="center", fontsize=8)
         ax.set_title(title, fontsize=10); ax.set_ylabel(ylab)
         ax.grid(True, ls="--", alpha=0.3, lw=0.5)
