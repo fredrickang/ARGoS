@@ -112,10 +112,11 @@ class RlControllerMixin:
         pred = 1 if prob >= threshold else 0
         return pred, prob, x_state
 
-    # ---- safety score (paper §V-A): learned classifier OR analytical EDF util margin -------
+    # ---- risk estimator (paper §V-B): learned classifier OR analytical EDF utilization ------
+    #      Risk score r: LOWER = safer, r_min = 0. Accept iff r <= lambda.
 
     def _rl_profile_table(self):
-        """Execution-time table used as C_i(q) by the analytical scorer.
+        """Execution-time table used as C_i(q) by the analytical risk estimator.
 
         'valid'  -> ground-truth WCET bounds (Case 1); 'invalid' -> estimated/possibly
         perturbed profile (Case 2). Falls back to whichever table is available.
@@ -145,28 +146,28 @@ class RlControllerMixin:
                 u += c / tinfo.period
         return u
 
-    def _rl_candidate_scores(self, actions, x_states=None):
-        """Safety scores f (higher = safer, f ≤ fmax=1) for a list of candidate decisions,
-        plus the per-candidate miss probabilities (None for the analytical scorer).
+    def _rl_candidate_risks(self, actions, x_states=None):
+        """Risk scores r (LOWER = safer, r_min = 0) for a list of candidate decisions, plus the
+        per-candidate miss probabilities (None for the analytical estimator).
 
-        analytical: f = 1 - Σ C_i(q_i)/T_i (EDF utilization margin, Eq. 4).
-        learned:    f = 1 - miss_prob (classifier), batched over candidates.
+        analytical: r = Σ C_i(q_i)/T_i (EDF total utilization, Eq. 4; analytical threshold 1).
+        learned:    r = miss_prob (classifier), batched over candidates.
         """
         if getattr(self, "_safety_score_mode", "learned") == "analytical":
             table = self._rl_profile_table()
-            scores = [1.0 - self._rl_analytical_util(a, table) for a in actions]
-            return scores, [None] * len(actions)
+            risks = [self._rl_analytical_util(a, table) for a in actions]
+            return risks, [None] * len(actions)
         if x_states is None:
             prev = self.w_id - 1
             x_states = [self._rl_build_profile_state(prev, a) for a in actions]
         probs = self._rl_predict_miss_probs_batch(x_states)
-        scores = [1.0 - float(p) for p in probs]
-        return scores, probs
+        risks = [float(p) for p in probs]
+        return risks, probs
 
-    def _rl_score_and_prob(self, action):
-        """Safety score (and miss prob, None for analytical) for a single candidate."""
-        scores, probs = self._rl_candidate_scores([action])
-        return scores[0], probs[0]
+    def _rl_risk_and_prob(self, action):
+        """Risk score (and miss prob, None for analytical) for a single candidate."""
+        risks, probs = self._rl_candidate_risks([action])
+        return risks[0], probs[0]
 
     def _rl_safety(self):
         """Lazily build and cache the safety guard from ``controller.safety`` config."""
@@ -341,23 +342,23 @@ class RlControllerMixin:
             return
 
         try:
-            # Validate on the safety score f (learned: 1 - miss_prob; analytical: 1 - util).
-            score, miss_prob = self._rl_score_and_prob(applied_action)
-            self.rl_action_pending["score"] = score
+            # Validate on the risk score r (learned: miss_prob; analytical: total utilization U).
+            risk, miss_prob = self._rl_risk_and_prob(applied_action)
+            self.rl_action_pending["risk"] = risk
             if miss_prob is not None:
                 self.rl_action_pending["miss_prob"] = miss_prob
             fallback_enabled = (
                 guard.fallback_enabled and self.w_id >= int(guard.fallback_start_window)
             )
-            if fallback_enabled and guard.needs_fallback(score):
-                fb_action, fb_score, fb_prob, fb_state = self._rl_safe_fallback(
-                    applied_action, score
+            if fallback_enabled and guard.needs_fallback(risk):
+                fb_action, fb_risk, fb_prob, fb_state = self._rl_safe_fallback(
+                    applied_action, risk
                 )
                 if fb_action is not None:
                     applied_action = fb_action
                     self.rl_action_pending["action"] = list(fb_action)
                     self.rl_action_pending["x_state"] = fb_state
-                    self.rl_action_pending["score"] = fb_score
+                    self.rl_action_pending["risk"] = fb_risk
                     if fb_prob is not None:
                         self.rl_action_pending["miss_prob"] = fb_prob
                     self.rl_action_pending["fallback_from_action"] = list(action)
@@ -367,27 +368,27 @@ class RlControllerMixin:
         except Exception as exc:
             logger.warning("RL prediction failed: %s", exc)
 
-    def _rl_safe_fallback(self, action, orig_score):
+    def _rl_safe_fallback(self, action, orig_risk):
         """Grouped-reduction fallback (Algorithm 2).
 
         Among the grouped candidates that the guard accepts, pick the one with the
-        largest total QoS. The all-zero decision ``d_safe`` (drop all jobs) is assigned an
-        unbounded score (Eq. 8) and is always admissible, so the validated set is never empty
-        and a validated decision is always returned. Scores come from the active scorer
-        (learned classifier or analytical EDF utilization margin).
-        Returns ``(action, score, miss_prob, x_state)`` (miss_prob None under analytical).
+        largest total QoS. The all-zero decision ``d_safe`` (drop all jobs) is assigned a risk
+        of ``-∞`` (Eq. 8) and is always admissible, so the validated set is never empty and a
+        validated decision is always returned. Risk scores come from the active estimator
+        (learned classifier r=miss_prob, or analytical EDF utilization r=U).
+        Returns ``(action, risk, miss_prob, x_state)`` (miss_prob None under analytical).
         """
         prev_win_id = self.w_id - 1
         guard = self._rl_safety()
         candidates = self._rl_build_grouped_fallback_candidates(action)
         x_states = [self._rl_build_profile_state(prev_win_id, cand) for cand in candidates]
-        scores, miss_probs = self._rl_candidate_scores(candidates, x_states=x_states)
+        risks, miss_probs = self._rl_candidate_risks(candidates, x_states=x_states)
 
         best_idx = None
         best_sum = -1
-        for idx, (cand, cand_score) in enumerate(zip(candidates, scores)):
-            is_dsafe = (sum(cand) == 0)  # d_safe: unbounded score, always accepted (Eq. 8)
-            if not (is_dsafe or guard.is_accepted(cand_score)):
+        for idx, (cand, cand_risk) in enumerate(zip(candidates, risks)):
+            is_dsafe = (sum(cand) == 0)  # d_safe: risk -inf, always accepted (Eq. 8)
+            if not (is_dsafe or guard.is_accepted(cand_risk)):
                 continue
             cand_sum = sum(cand)
             if cand_sum > best_sum:
@@ -398,21 +399,21 @@ class RlControllerMixin:
             best_idx = len(candidates) - 1  # all-zero d_safe
 
         chosen_action = candidates[best_idx]
-        chosen_score = scores[best_idx]
+        chosen_risk = risks[best_idx]
         chosen_prob = miss_probs[best_idx]
         chosen_state = x_states[best_idx]
         self._rl_log(
             "SafeFallback",
-            "orig_sum=%s orig_score=%.4f | chosen_sum=%s chosen_score=%.4f steps=%s %s",
+            "orig_sum=%s orig_risk=%.4f | chosen_sum=%s chosen_risk=%.4f steps=%s %s",
             sum(action),
-            orig_score,
+            orig_risk,
             sum(chosen_action),
-            chosen_score,
+            chosen_risk,
             len(candidates),
             guard.status(),
             color="safe_fallback",
         )
-        return chosen_action, chosen_score, chosen_prob, chosen_state
+        return chosen_action, chosen_risk, chosen_prob, chosen_state
 
     def _apply_mode_change(self, prev_qos_list):
         """Apply the mode-change protocol to the validated decision now in ``cur_qos`` (d̂_k):
@@ -548,21 +549,21 @@ class RlControllerMixin:
         self.window_log[outcome_win]["safe_fallback"] = bool(pending.get("safe_fallback"))
         # Threshold that governed this window's validation (λ_t for RCRL).
         self.window_log[outcome_win]["rcrl_lambda"] = pending.get("guard_threshold")
-        self.window_log[outcome_win]["safety_score"] = pending.get("score")
+        self.window_log[outcome_win]["risk_score"] = pending.get("risk")
         self._rl_save_sample(pending, miss)
         finetune_buf = self._rl_update_finetune_buffer(pending, miss)
         miss_prob = pending.get("miss_prob")
-        score = pending.get("score")
-        # Update the safety guard on the applied decision's outcome (Alg. 1 L13: threshold
-        # step; conformal calibration for the baseline). Only while the shield is actually
-        # active — the risk controller must not integrate misses from windows it isn't
-        # controlling (before fallback_start_window, or when the fallback is disabled), or
-        # λ inflates uselessly and then rejects everything.
+        risk = pending.get("risk")
+        # Update the risk controller on the applied decision's outcome (Alg. 1 L13: threshold
+        # step λ ← λ − γ(Mₖ − α); conformal calibration for the baseline). Only while the shield
+        # is actually active — the controller must not integrate misses from windows it isn't
+        # controlling (before fallback_start_window, or when the fallback is disabled), or λ
+        # drifts uselessly.
         guard = self._rl_safety()
         shield_active = guard.fallback_enabled and outcome_win >= int(guard.fallback_start_window)
         self.window_log[outcome_win]["shield_active"] = bool(shield_active)
         if shield_active:
-            guard.update_on_outcome(loss=ell, score=score, x_state=pending.get("x_state"))
+            guard.update_on_outcome(loss=ell, risk=risk, x_state=pending.get("x_state"))
             # Running realized loss over SHIELDED windows only — the quantity Theorem 1
             # bounds (binary miss rate, or mean fractional DMR under loss_mode=fraction).
             # Warmup (unshielded) windows are excluded: the guarantee only covers decisions

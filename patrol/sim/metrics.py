@@ -245,10 +245,10 @@ class UtilMixin:
     def _rcrl_summary(self, window_ids):
         """Safety-guard telemetry, including the RCRL Theorem-1 check.
 
-        ``realized_miss_rate = (1/T) Σ ℓ_t`` is the quantity Theorem 1 bounds by
-        ``α + (1+γB)/(γT)``. The loss ``ℓ_t`` matches the shield's ``loss_mode``: the
-        binary indicator ``1[dmr>0]`` (default) or the fractional per-window miss ratio
-        ``dmr`` (``loss_mode=fraction``). Both lie in [0,1] so the bound is unchanged.
+        ``realized_miss_rate = (1/K) Σ ℓ_k`` is the quantity Theorem 1 bounds by
+        ``α + (λ₁ − r_min + γB)/(γK)`` (risk framing, Eq. 12). The loss ``ℓ_k`` matches the
+        shield's ``loss_mode``: the binary indicator ``1[dmr>0]``, the fractional per-window
+        miss ratio ``dmr``, or the releasable-normalized ratio. All lie in [0,1].
         """
         guard = getattr(self, "_safety_guard", None)
         if guard is None or not window_ids:
@@ -317,6 +317,7 @@ class UtilMixin:
             block["adaptive_window"] = bool(getattr(self, "_adaptive_window_enabled", False))
         if guard.mode == "rcrl":
             block["gamma"] = guard.gamma
+            block["rmin"] = guard.rmin
             block["lambda_init"] = guard.lambda_init
             block["lambda_final"] = guard.lam
             lam_vals = [x for x in lam_traj if x is not None]

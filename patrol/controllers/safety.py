@@ -1,25 +1,25 @@
-"""Safety guards for the RL QoS controller.
+"""Risk estimator + adaptive threshold guards for the RL QoS controller.
 
-The RL agent proposes a QoS decision each window; a *safety guard* validates that
-decision before it is applied and, if it is rejected, drives the grouped-reduction
-fallback (see ``RlControllerMixin._rl_safe_fallback``). Guards share one interface so
-the controller flow is mode-agnostic:
+The RL agent proposes a QoS decision each window; a *guard* validates that decision before
+it is applied and, if it is rejected, drives the grouped-reduction fallback (see
+``RlControllerMixin._rl_safe_fallback``). Guards share one interface so the controller flow is
+mode-agnostic:
 
-    accept iff  guard.is_accepted(score)              # score = safety score f (higher = safer)
-    per-window  guard.update_on_outcome(loss=..., score=..., x_state=...)
+    accept iff  guard.is_accepted(risk)              # risk = risk score r (LOWER = safer)
+    per-window  guard.update_on_outcome(loss=..., risk=..., x_state=...)
 
-All guards operate on a **safety score** ``f`` (higher = safer, upper-bounded by ``fmax``),
-matching the paper's SafetyGuard (§V-A). The controller supplies ``f`` from whichever scorer
-is active — the learned classifier ``f = 1 - miss_prob`` (Case 3, ``fmax = 1``) or the
-analytical EDF utilization margin ``f = 1 - Σ Cᵢ(qᵢ)/Tᵢ`` (Cases 1 & 2, ``fmax = 1``). The
-guard itself is scorer-agnostic.
+All guards operate on a **risk score** ``r`` (LOWER = safer, lower-bounded by ``r_min``),
+matching the paper's SafetyGuard risk estimator (§V-B). The controller supplies ``r`` from
+whichever risk estimator is active — the learned classifier ``r = miss_prob`` (Case 3,
+``r_min = 0``) or the analytical EDF utilization ``r = Σ Cᵢ(qᵢ)/Tᵢ`` (Cases 1 & 2, ``r_min = 0``).
+The guard itself is estimator-agnostic.
 
 Modes (``controller.safety.mode``):
 
 * ``rcrl``       — Adaptive Threshold Control (Algorithm 1). A single online threshold ``λ``
                    with a distribution-free long-run guarantee (Theorem 1):
-                   accept iff safety score ``f ≥ λ``; update ``λ ← λ + γ (ℓ - α)`` per window.
-                   Works with any scorer (learned or analytical).
+                   accept iff risk ``r ≤ λ``; update ``λ ← λ − γ (Mₖ − α)`` per window.
+                   Works with any risk estimator (learned or analytical).
 * ``conformal``  — legacy split-conformal quantile guard (kept as a baseline).
 * ``rt_analytic``— standalone analytic EDF util-≤-1 hard cap (``rt_shielding``); legacy
                    baseline, never combined with ``rcrl``. (For the paper's Cases 1 & 2 use
@@ -39,21 +39,21 @@ class SafetyGuard:
     mode = "none"
     fallback_enabled = False
     fallback_start_window = 0
-    fmax = 1.0
+    rmin = 0.0
 
-    def is_accepted(self, score):
-        """Accept the decision given its safety score ``f`` (higher = safer)."""
+    def is_accepted(self, risk):
+        """Accept the decision given its risk score ``r`` (lower = safer)."""
         return True
 
-    def needs_fallback(self, score):
-        return not self.is_accepted(score)
+    def needs_fallback(self, risk):
+        return not self.is_accepted(risk)
 
-    def update_on_outcome(self, *, loss, score=None, x_state=None):
+    def update_on_outcome(self, *, loss, risk=None, x_state=None):
         """Called once per window after the applied decision's outcome is observed."""
         return None
 
     def on_classifier_refined(self, predict_fn, extra_miss_samples=None):
-        """Hook invoked after the classifier is fine-tuned (REFINE)."""
+        """Hook invoked after the risk estimator is fine-tuned (REFINE)."""
         return None
 
     def threshold_value(self):
@@ -71,33 +71,36 @@ class SafetyGuard:
 class AdaptiveRiskGuard(SafetyGuard):
     """Adaptive threshold control (Algorithm 1).
 
-    Accept iff ``f ≥ λ`` for safety score ``f`` (higher = safer, bounded by ``fmax``);
-    after each window update ``λ ← λ + γ (ℓ - α)`` where ``ℓ`` is the realized deadline-miss
-    loss and ``α`` the target miss level. ``λ`` is deliberately **not** clipped above — the
-    Theorem-1 proof only needs ``λ₁ ∈ [0, fmax]`` and the natural bound
-    ``λ ≤ fmax + γ·max(α, 1-α)`` (Lemma 2); a hard clamp would break the guarantee.
+    Accept iff ``r ≤ λ`` for risk score ``r`` (LOWER = safer, lower-bounded by ``r_min``);
+    after each window update ``λ ← λ − γ (Mₖ − α)`` where ``Mₖ`` is the realized per-window
+    deadline-miss ratio and ``α`` the target miss level. The threshold DECREASES (more
+    conservative) when ``Mₖ > α`` and INCREASES (more permissive) when ``Mₖ < α``.
 
-    The scorer is external: ``f = 1 - miss_prob`` for the learned classifier (Case 3) or the
-    analytical EDF utilization margin ``f = 1 - Σ Cᵢ/Tᵢ`` (Cases 1 & 2). For both,
-    ``fmax = 1``. Case 1 (valid profiles, hard guarantee) uses ``α = 0`` and ``λ₁ = η = 0``;
-    Lemma 1 then keeps ``λ ≡ 0``.
+    The risk estimator is external: ``r = miss_prob`` for the learned classifier (Case 3) or
+    the analytical EDF utilization ``r = Σ Cᵢ/Tᵢ`` (Cases 1 & 2). For both, ``r_min = 0``.
+    Case 1 (valid profiles, hard guarantee) initializes ``λ₁`` to the analytical threshold
+    (= 1 for the EDF utilization test, i.e. accept iff ``U ≤ 1``) and sets ``α = 0``; the
+    threshold then stays there (Case-1 analysis in §VI-A).
+
+    ``λ`` is bounded from below by ``r_min − γB`` (Lemma 1); ``B ≜ max(α, 1-α)``. It is NOT
+    clamped by default — a clamp is unnecessary for the guarantee. An optional ``lambda_max``
+    upper clamp can remove accumulated "accept-everything" slack (when misses stay well below
+    α the threshold drifts up, delaying re-engagement after a regime shift); the clamp only
+    tightens the long-run bound and never relaxes it.
     """
 
     mode = "rcrl"
 
-    def __init__(self, *, gamma=0.05, alpha=0.1, lambda_init=0.5, lambda_min=0.0,
-                 fmax=1.0, fallback_enabled=True, fallback_start_window=0):
+    def __init__(self, *, gamma=0.05, alpha=0.1, lambda_init=0.5, lambda_max=None,
+                 rmin=0.0, fallback_enabled=True, fallback_start_window=0):
         self.gamma = float(gamma)
         self.alpha = float(alpha)
-        self.fmax = float(fmax)
+        self.rmin = float(rmin)
         self.lambda_init = float(lambda_init)
         self.lam = float(lambda_init)
-        # Optional lower clamp on λ. For any λ ≤ 0 the guard accepts everything
-        # (safety scores ∈ [0,1]), so λ<0 is pure accumulated slack that only delays
-        # re-engagement after a dangerous regime shift. Clamping at 0 removes that lag
-        # while preserving Theorem 1 (the clamp corrections are non-negative and only
-        # tighten the long-run bound). Set to None for the exact unclamped textbook rule.
-        self.lambda_min = None if lambda_min is None else float(lambda_min)
+        # Optional UPPER clamp on λ (risk framing: large λ accepts everything). None = exact
+        # unclamped textbook rule.
+        self.lambda_max = None if lambda_max is None else float(lambda_max)
         self.fallback_enabled = bool(fallback_enabled)
         self.fallback_start_window = int(fallback_start_window)
 
@@ -105,35 +108,36 @@ class AdaptiveRiskGuard(SafetyGuard):
     def B(self):
         return max(self.alpha, 1.0 - self.alpha)
 
-    def is_accepted(self, score):
-        return float(score) >= self.lam
+    def is_accepted(self, risk):
+        return float(risk) <= self.lam
 
-    def update_on_outcome(self, *, loss, score=None, x_state=None):
-        self.lam += self.gamma * (float(loss) - self.alpha)
-        if self.lambda_min is not None and self.lam < self.lambda_min:
-            self.lam = self.lambda_min
+    def update_on_outcome(self, *, loss, risk=None, x_state=None):
+        # λ_{k+1} = λ_k − γ (M_k − α)   (Eq. 7); loss is the per-window miss ratio M_k.
+        self.lam -= self.gamma * (float(loss) - self.alpha)
+        if self.lambda_max is not None and self.lam > self.lambda_max:
+            self.lam = self.lambda_max
         return self.lam
 
     def threshold_value(self):
         return self.lam
 
     def theorem_bound(self, horizon):
-        # (1/T) Σ ℓ_t ≤ α + (fmax + γB) / (γT)   (Theorem 1, Eq. 14).
+        # (1/K) Σ ℓ_k ≤ α + (λ₁ − r_min + γB) / (γK)   (Theorem 1, Eq. 12).
         if not horizon or horizon <= 0:
             return None
-        return self.alpha + (self.fmax + self.gamma * self.B) / (self.gamma * horizon)
+        return self.alpha + (self.lambda_init - self.rmin + self.gamma * self.B) / (self.gamma * horizon)
 
     def status(self):
         return {"lambda": round(self.lam, 4), "gamma": self.gamma,
-                "alpha": self.alpha, "fmax": self.fmax}
+                "alpha": self.alpha, "rmin": self.rmin}
 
 
 class ConformalGuard(SafetyGuard):
     """Legacy split-conformal quantile guard (baseline).
 
-    Accept iff ``miss_prob < threshold`` **and** ``(1 - miss_prob) > q_hat``, where
-    ``q_hat`` is a rolling quantile of the safe scores observed on deadline-miss windows.
-    Faithful port of the original ``_rl_*_safe_calibration`` logic.
+    Operates on the learned risk ``r = miss_prob``. Accept iff ``miss_prob < threshold`` **and**
+    the safe score ``(1 - miss_prob) > q_hat``, where ``q_hat`` is a rolling quantile of the safe
+    scores observed on deadline-miss windows. Faithful port of the original calibration logic.
     """
 
     mode = "conformal"
@@ -153,13 +157,14 @@ class ConformalGuard(SafetyGuard):
     def _threshold(self):
         return float(self._threshold_fn()) if self._threshold_fn else 0.5
 
-    def is_accepted(self, score):
-        # score = f = 1 - miss_prob, so miss_prob = 1 - score.
-        if (1.0 - float(score)) >= self._threshold():
+    def is_accepted(self, risk):
+        # risk = miss_prob; safe score = 1 - miss_prob.
+        miss_prob = float(risk)
+        if miss_prob >= self._threshold():
             return False
         if self.qhat is None:
             return True
-        return float(score) > self.qhat
+        return (1.0 - miss_prob) > self.qhat
 
     def _recompute_qhat(self):
         if not self.scores:
@@ -171,13 +176,13 @@ class ConformalGuard(SafetyGuard):
         k = max(1, min(k, n))
         self.qhat = scores[k - 1]
 
-    def update_on_outcome(self, *, loss, score=None, x_state=None):
-        if score is None:
+    def update_on_outcome(self, *, loss, risk=None, x_state=None):
+        if risk is None:
             return None
         if loss == 1:
             if x_state is not None:
                 self.calib_samples.append({"x_state": x_state, "y_miss": 1})
-            self.scores.append(float(score))
+            self.scores.append(float(1.0 - float(risk)))   # safe score = 1 - miss_prob
             if self.window:
                 self.scores[:] = self.scores[-self.window:]
             self._recompute_qhat()
@@ -218,7 +223,7 @@ class RtAnalyticGuard(SafetyGuard):
 
     The actual adjustment lives in ``RlControllerMixin.rt_shielding`` (it needs the
     scheduler's estimated exec tables). This guard only tags the mode so the controller
-    routes to the analytic path instead of the learned classifier + fallback. It is a
+    routes to the analytic path instead of the learned risk estimator + fallback. It is a
     profile-based comparison baseline and is never combined with ``rcrl``.
     """
 
@@ -253,9 +258,9 @@ def build_safety_guard(ctrl, *, threshold_fn=None):
         return AdaptiveRiskGuard(
             gamma=safety.get("lambda_step_gamma", 0.05),
             alpha=safety.get("target_miss_alpha", 0.1),
-            fmax=safety.get("fmax", 1.0),
+            rmin=safety.get("rmin", 0.0),
             lambda_init=safety.get("lambda_init", 0.5),
-            lambda_min=safety.get("lambda_min", 0.0),
+            lambda_max=safety.get("lambda_max", None),
             fallback_enabled=safety.get("fallback_enabled", True),
             fallback_start_window=safety.get("fallback_start_window", 0),
         )

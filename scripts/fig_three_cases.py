@@ -57,17 +57,23 @@ C3_COLOR = "#6A3D9A"   # purple (learned)
 C2_RAMP = ["#FEB24C", "#FC4E2A", "#B10026"]  # YlOrRd 10% / 50% / 90%
 
 
+# Risk framing: analytical risk r=U uses the analytical threshold lambda_init=1 (accept U<=1);
+# learned risk r=miss_prob uses lambda_init=0.5 (accept miss_prob<=0.5).
+LAM_ANALYTIC = 1.0
+LAM_LEARNED = 0.5
+
+
 def cases():
     """(tag, label, color, safety-overrides) for every curve, in legend order."""
     out = [("case1", "Case 1 (valid, hard)", C1_COLOR, dict(
         score="analytical", profile="valid", target_miss_alpha=0.0,
-        lambda_init=0.0, mode_change=True))]
+        lambda_init=LAM_ANALYTIC, mode_change=True))]
     for u, col in zip(UNDEREST, C2_RAMP):
         out.append((f"case2_u{int(u*100)}", f"Case 2 ({int(u*100)}% underest.)", col, dict(
             score="analytical", profile="invalid", profile_underest=u,
-            target_miss_alpha=ALPHA, lambda_init=0.5, mode_change=False)))
+            target_miss_alpha=ALPHA, lambda_init=LAM_ANALYTIC, mode_change=False)))
     out.append(("case3", "Case 3 (learned)", C3_COLOR, dict(
-        score="learned", target_miss_alpha=ALPHA, lambda_init=0.5, mode_change=False)))
+        score="learned", target_miss_alpha=ALPHA, lambda_init=LAM_LEARNED, mode_change=False)))
     return out
 
 
@@ -192,24 +198,28 @@ def plot():
     small_multiples("dmr", "Deadline-miss ratio (per window)", "DMR", hline=ALPHA, ylim=(0, 1.05))
 
     # ---- cumulative average DMR + Theorem-1 bound ----
-    # Theorem 1 (Eq.14): (1/K) Σ ℓ_k ≤ α + (f_max + γB)/(γK),  B = max(α,1-α), f_max=1, γ=0.05.
-    # Decays like 1/K toward α. Two groups: α=0.1 (Cases 2 & 3) and α=0 (Case 1).
-    GAMMA, FMAX = 0.05, 1.0
+    # Theorem 1 (Eq.12, risk framing): (1/K) Σ ℓ_k ≤ α + (λ₁ − r_min + γB)/(γK),
+    # B = max(α,1-α), r_min=0, γ=0.05. Decays like 1/K toward α; the constant depends on λ₁, so
+    # analytical cases (λ₁=1) and the learned case (λ₁=0.5) have different envelopes.
+    GAMMA, RMIN = 0.05, 0.0
 
-    def theorem_bound(tvals, alpha):
+    def theorem_bound(tvals, alpha, lam1):
         B = max(alpha, 1.0 - alpha)
-        return [alpha + (FMAX + GAMMA * B) / (GAMMA * (i + 1)) for i in range(len(tvals))]
+        return [alpha + (lam1 - RMIN + GAMMA * B) / (GAMMA * (i + 1)) for i in range(len(tvals))]
 
     fig, ax = plt.subplots(figsize=(10, 5))
     for tag, label, color, _ in specs:
         ax.plot(data[tag]["t"], data[tag]["avg_dmr"], color=color, lw=1.6, label=label)
-    # bound envelopes (dashed), one per distinct α
-    t01 = data["case3"]["t"]
-    ax.plot(t01, theorem_bound(t01, 0.1), color="0.35", ls=":", lw=1.6,
-            label="Theorem-1 bound (α=0.1)")
+    # bound envelopes (dashed), one per distinct (α, λ₁) group
+    t2 = data["case2_u50"]["t"]
+    ax.plot(t2, theorem_bound(t2, 0.1, LAM_ANALYTIC), color="0.35", ls=":", lw=1.6,
+            label="bound: Case 2 (α=0.1, λ₁=1)")
+    t3 = data["case3"]["t"]
+    ax.plot(t3, theorem_bound(t3, 0.1, LAM_LEARNED), color=C3_COLOR, ls=":", lw=1.4,
+            label="bound: Case 3 (α=0.1, λ₁=0.5)")
     t00 = data["case1"]["t"]
-    ax.plot(t00, theorem_bound(t00, 0.0), color=C1_COLOR, ls=":", lw=1.4,
-            label="Theorem-1 bound (Case 1, α=0)")
+    ax.plot(t00, theorem_bound(t00, 0.0, LAM_ANALYTIC), color=C1_COLOR, ls=":", lw=1.4,
+            label="bound: Case 1 (α=0)")
     ax.axhline(ALPHA, color="black", ls="--", lw=1.0, alpha=0.6)
     ax.text(ax.get_xlim()[1], ALPHA, f"  α={ALPHA}", va="center", fontsize=8)
     ax.set_ylim(0, 1.0)
@@ -232,11 +242,13 @@ def plot():
         for tag, label, color, _ in specs:
             y = _rollband(data[tag][key])[0] if key != "avg_dmr" else data[tag][key]
             ax.plot(data[tag]["t"], y, color=color, lw=1.5, label=label)
-        if key == "avg_dmr":   # overlay Theorem-1 bound envelopes
-            ax.plot(t01, theorem_bound(t01, 0.1), color="0.35", ls=":", lw=1.5,
-                    label="Theorem-1 bound (α=0.1)")
-            ax.plot(t00, theorem_bound(t00, 0.0), color=C1_COLOR, ls=":", lw=1.3,
-                    label="bound (Case 1, α=0)")
+        if key == "avg_dmr":   # overlay Theorem-1 bound envelopes (depend on α and λ₁)
+            ax.plot(t2, theorem_bound(t2, 0.1, LAM_ANALYTIC), color="0.35", ls=":", lw=1.5,
+                    label="bound: Case 2 (λ₁=1)")
+            ax.plot(t3, theorem_bound(t3, 0.1, LAM_LEARNED), color=C3_COLOR, ls=":", lw=1.3,
+                    label="bound: Case 3 (λ₁=0.5)")
+            ax.plot(t00, theorem_bound(t00, 0.0, LAM_ANALYTIC), color=C1_COLOR, ls=":", lw=1.3,
+                    label="bound: Case 1 (α=0)")
             ax.set_ylim(0, 1.0)
         if hl is not None:
             ax.axhline(hl, color="black", ls="--", lw=0.9, alpha=0.6)

@@ -95,8 +95,8 @@ controller:
     loss_mode: binary          # binary | fraction | releasable
     dmr_membership: terminate  # terminate | release (job-to-window attribution for the miss ratio)
     lambda_step_gamma: 0.05    # gamma : threshold step size
-    lambda_init: 0.5           # lambda_0
-    lambda_min: 0.0            # lower clamp on lambda (null = exact unclamped rule)
+    lambda_init: 0.5           # lambda_1 (learned risk estimator: accept miss_prob <= lambda)
+    lambda_max: null           # optional UPPER clamp on lambda (null = exact unclamped rule)
     fallback_enabled: true
     # Delay the shield so the RL agent learns unshielded first. Swept 0/100/200/300/500
     # on a static 2000-window run (scripts/run_shield_delay_sweep.py): 200 gives the
