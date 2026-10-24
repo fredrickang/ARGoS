@@ -3,7 +3,7 @@
 
 Runs ARGoS on ONE fixed task set (deterministic, seed 22) under:
   * Case 1  — valid profiles, analytical score, alpha=0, mode-change  -> hard guarantee
-  * Case 2  — invalid profiles, analytical score, WCET underestimated by 10/30/50/70/90%
+  * Case 2  — invalid profiles, analytical score, WCET underestimated by 50%
   * Case 3  — unavailable profiles, learned classifier
 All with the shield active from window 0 (no unshielded warmup backlog). Produces three
 figures — utilization, per-window DMR, and cumulative-average DMR — each overlaying all
@@ -33,7 +33,11 @@ except Exception as exc:  # pragma: no cover
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASE_CFG = os.path.join(ROOT, "configs", "run_sim.yaml")
 FIG_DIR = os.path.join(ROOT, "paper_results", "figures")
-DURATION_MS = 2_500_000
+# Fixed window W = 10 s, N = 2000 windows (adaptive window OFF so every case shares the same
+# window axis). x-axis is the window index throughout.
+W_MS = 10_000
+N_WINDOWS = 2000
+DURATION_MS = W_MS * N_WINDOWS
 
 # Set by main(): 'paper' = Eq.1 (QoS gated on no-miss); 'v2' = legacy util-tracking reward.
 REWARD = "paper"
@@ -48,19 +52,19 @@ def fig_path(key):
     pre = "" if REWARD == "paper" else f"{REWARD}_"
     return os.path.join(FIG_DIR, f"three_cases_{pre}{key}.png")
 
-UNDEREST = [0.1, 0.5, 0.9]                      # Case-2 WCET underestimation levels
+UNDEREST = [0.5]                                # Case-2 WCET underestimation level(s)
 ALPHA = 0.1                                     # target for Cases 2 & 3
 
-# --- colors: Case 1 / Case 3 are distinct hues; Case 2 is ONE hue, light->dark by invalidity.
-C1_COLOR = "#0B7A75"   # teal  (hard guarantee)
-C3_COLOR = "#6A3D9A"   # purple (learned)
-C2_RAMP = ["#FEB24C", "#FC4E2A", "#B10026"]  # YlOrRd 10% / 50% / 90%
+# --- colors: one distinct hue per case.
+C1_COLOR = "#0B7A75"   # teal   (Case 1, hard guarantee)
+C3_COLOR = "#6A3D9A"   # purple (Case 3, learned)
+C2_RAMP = ["#FC4E2A"]  # orange-red (Case 2)
 
 
-# Risk framing: analytical risk r=U uses the analytical threshold lambda_init=1 (accept U<=1);
-# learned risk r=miss_prob uses lambda_init=0.5 (accept miss_prob<=0.5).
+# Risk framing. Case 1 (analytical, valid) uses the analytical threshold lambda_init=1
+# (accept U<=1). Cases 2 & 3 share lambda_init=0.5.
 LAM_ANALYTIC = 1.0
-LAM_LEARNED = 0.5
+LAM_SOFT = 0.5
 
 
 def cases():
@@ -71,17 +75,19 @@ def cases():
     for u, col in zip(UNDEREST, C2_RAMP):
         out.append((f"case2_u{int(u*100)}", f"Case 2 ({int(u*100)}% underest.)", col, dict(
             score="analytical", profile="invalid", profile_underest=u,
-            target_miss_alpha=ALPHA, lambda_init=LAM_ANALYTIC, mode_change=False)))
+            target_miss_alpha=ALPHA, lambda_init=LAM_SOFT, mode_change=False)))
     out.append(("case3", "Case 3 (learned)", C3_COLOR, dict(
-        score="learned", target_miss_alpha=ALPHA, lambda_init=LAM_LEARNED, mode_change=False)))
+        score="learned", target_miss_alpha=ALPHA, lambda_init=LAM_SOFT, mode_change=False)))
     return out
 
 
 def build_cfg(safety_over, out_dir):
     cfg = yaml.safe_load(open(BASE_CFG))
     cfg["simulation"]["duration_ms"] = DURATION_MS
+    cfg.setdefault("window", {})["size_ms"] = W_MS           # fixed 10 s window
     cfg.setdefault("output", {})["dir"] = out_dir
     cfg["controller"]["dynamic_mode"] = 0
+    cfg["controller"].setdefault("adaptive_window", {})["enabled"] = False  # fixed W, same axis
     cfg["controller"].setdefault("rl", {})["reward"] = REWARD
     s = cfg["controller"].setdefault("safety", {})
     s["fallback_start_window"] = 0          # shield from window 0 (no backlog warmup)
@@ -108,11 +114,11 @@ def latest_windows_csv(tag):
 
 
 def load_series(tag):
-    """Return dict with t (seconds), util, dmr, avg_dmr (cumulative mean).
+    """Return dict with t (WINDOW index), util, dmr, avg_dmr (cumulative mean).
 
-    'dmr' is the per-window miss ratio M_k = missed / max-releasable jobs (paper Eq. 1) — the
-    quantity Theorem 1 bounds — computed from n_miss_jobs / n_job_releasable when available,
-    else the recorded terminate-membership dmr.
+    The x-axis is the window index (w_id). 'dmr' is the per-window miss ratio
+    M_k = missed / max-releasable jobs (paper Eq. 1) — the quantity Theorem 1 bounds —
+    from n_miss_jobs / n_job_releasable when available, else the recorded dmr.
     """
     path = latest_windows_csv(tag)
     if not path:
@@ -120,7 +126,7 @@ def load_series(tag):
     t, util, dmr = [], [], []
     for r in csv.DictReader(open(path)):
         try:
-            t.append(float(r["t_end"]) / 1000.0)   # ms -> s
+            t.append(int(float(r["w_id"])))        # x-axis = window index
             util.append(float(r["act_util"]))
             nrel = float(r.get("n_job_releasable") or 0)
             if nrel > 0:
@@ -150,7 +156,7 @@ def _smooth(y, w=9):
 
 def _style(ax):
     ax.grid(True, ls="--", alpha=0.35, lw=0.6)
-    ax.set_xlabel("time (s)")
+    ax.set_xlabel("window index")
     for sp in ("top", "right"):
         ax.spines[sp].set_visible(False)
 
@@ -195,7 +201,7 @@ def plot():
             ax.grid(True, ls="--", alpha=0.3, lw=0.5)
             for sp in ("top", "right"):
                 ax.spines[sp].set_visible(False)
-        axes[-1].set_xlabel("time (s)")
+        axes[-1].set_xlabel("window index")
         fig.supylabel(ylabel, fontsize=10)
         fig.suptitle(f"{metric_title} — {rlabel}  (line = 21-window mean, band = smoothed min–max)",
                      fontsize=11, y=0.998)
@@ -220,13 +226,10 @@ def plot():
     fig, ax = plt.subplots(figsize=(10, 5))
     for tag, label, color, _ in specs:
         ax.plot(data[tag]["t"], data[tag]["avg_dmr"], color=color, lw=1.6, label=label)
-    # bound envelopes (dashed), one per distinct (α, λ₁) group
-    t2 = data["case2_u50"]["t"]
-    ax.plot(t2, theorem_bound(t2, 0.1, LAM_ANALYTIC), color="0.35", ls=":", lw=1.6,
-            label="bound: Case 2 (α=0.1, λ₁=1)")
-    t3 = data["case3"]["t"]
-    ax.plot(t3, theorem_bound(t3, 0.1, LAM_LEARNED), color=C3_COLOR, ls=":", lw=1.4,
-            label="bound: Case 3 (α=0.1, λ₁=0.5)")
+    # bound envelopes (dashed): Cases 2 & 3 share (α=0.1, λ₁=0.5); Case 1 is (α=0, λ₁=1).
+    t23 = data["case3"]["t"]
+    ax.plot(t23, theorem_bound(t23, 0.1, LAM_SOFT), color="0.35", ls=":", lw=1.6,
+            label="bound: Cases 2 & 3 (α=0.1, λ₁=0.5)")
     t00 = data["case1"]["t"]
     ax.plot(t00, theorem_bound(t00, 0.0, LAM_ANALYTIC), color=C1_COLOR, ls=":", lw=1.4,
             label="bound: Case 1 (α=0)")
@@ -235,7 +238,7 @@ def plot():
     ax.set_ylim(0, 1.0)
     ax.set_title(f"Average deadline-miss ratio (cumulative) vs Theorem-1 bound — {rlabel}",
                  fontsize=11)
-    ax.set_ylabel("mean DMR"); ax.set_xlabel("time (s)")
+    ax.set_ylabel("mean DMR"); ax.set_xlabel("window index")
     ax.grid(True, ls="--", alpha=0.3, lw=0.5)
     for sp in ("top", "right"):
         ax.spines[sp].set_visible(False)
@@ -253,10 +256,8 @@ def plot():
             y = _rollband(data[tag][key])[0] if key != "avg_dmr" else data[tag][key]
             ax.plot(data[tag]["t"], y, color=color, lw=1.5, label=label)
         if key == "avg_dmr":   # overlay Theorem-1 bound envelopes (depend on α and λ₁)
-            ax.plot(t2, theorem_bound(t2, 0.1, LAM_ANALYTIC), color="0.35", ls=":", lw=1.5,
-                    label="bound: Case 2 (λ₁=1)")
-            ax.plot(t3, theorem_bound(t3, 0.1, LAM_LEARNED), color=C3_COLOR, ls=":", lw=1.3,
-                    label="bound: Case 3 (λ₁=0.5)")
+            ax.plot(t23, theorem_bound(t23, 0.1, LAM_SOFT), color="0.35", ls=":", lw=1.5,
+                    label="bound: Cases 2 & 3 (λ₁=0.5)")
             ax.plot(t00, theorem_bound(t00, 0.0, LAM_ANALYTIC), color=C1_COLOR, ls=":", lw=1.3,
                     label="bound: Case 1 (α=0)")
             ax.set_ylim(0, 1.0)
@@ -268,7 +269,7 @@ def plot():
         for sp in ("top", "right"):
             ax.spines[sp].set_visible(False)
     axes[0].legend(loc="upper right", fontsize=7, ncol=2, framealpha=0.9)
-    axes[-1].set_xlabel("time (s)")
+    axes[-1].set_xlabel("window index")
     fig.suptitle(f"ARGoS three-case comparison — {rlabel}  (mean lines)", fontsize=12, y=0.997)
     fig.tight_layout(rect=[0, 0, 1, 0.99])
     fig.savefig(fig_path("combined"), dpi=140); plt.close(fig)
@@ -281,61 +282,61 @@ def export_csv():
     (lo, band=hi-lo, mean) so the band is built with the stacked-area trick (plot lo with
     No-fill, band with a translucent fill, mean as a line). avg_dmr gets per-case cumulative
     curves plus the three Theorem-1 bounds."""
-    import numpy as np
     out_dir = os.path.join(FIG_DIR, "excel_data")
     os.makedirs(out_dir, exist_ok=True)
     specs = cases()
     data = {tag: load_series(tag) for tag, *_ in specs}
-    max_t = max(data[tag]["t"][-1] for tag, *_ in specs)
-    # Round grid so x-axis ticks land on clean values: step 5 s, extent rounded up to 500 s.
-    # 500 s = exactly 100 rows -> in Excel set the axis "interval between labels" to 100.
-    STEP = 5.0
-    extent = 500.0 * float(np.ceil(max_t / 500.0))
-    grid = list(np.arange(0.0, extent + STEP, STEP))
+    # x-axis = window index. Fixed W + equal duration => every case has the same window count;
+    # align directly by index (truncate to the shortest, just in case of a 1-window edge diff).
+    n = min(len(data[tag]["t"]) for tag, *_ in specs)
+    win = data[specs[0][0]]["t"][:n]
     pre = "" if REWARD == "paper" else f"{REWARD}_"
 
-    def interp(tt, y):
-        return list(np.interp(grid, tt, y))
-
-    # band CSVs (util, dmr): time + per-case lo / band / mean (all on the common grid)
+    # band CSVs (util, dmr): window + per-case lo / band / mean
     for key in ("util", "dmr"):
-        header, cols = ["time_s"], {}
+        header, cols = ["window"], {}
         for tag, *_ in specs:
             m, lo, hi = _rollband(data[tag][key])
-            tt = data[tag]["t"]
-            cols[tag] = (interp(tt, lo), interp(tt, hi), interp(tt, m))
+            cols[tag] = (lo, hi, m)
             header += [f"{tag}_lo", f"{tag}_band", f"{tag}_mean"]
         path = os.path.join(out_dir, f"{pre}band_{key}.csv")
         with open(path, "w", newline="") as fh:
             w = csv.writer(fh); w.writerow(header)
-            for i, tg in enumerate(grid):
-                row = [round(tg, 1)]
+            for i in range(n):
+                row = [win[i]]
                 for tag, *_ in specs:
                     lo, hi, m = cols[tag]
                     row += [round(lo[i], 5), round(hi[i] - lo[i], 5), round(m[i], 5)]
                 w.writerow(row)
         print("saved", path)
 
-    # avg_dmr CSV: time + per-case cumulative + the three Theorem-1 bounds (Eq. 12)
+    # avg_dmr CSV: window + per-case cumulative + the three Theorem-1 bounds (Eq. 12).
+    # Bound at window K: alpha + (lambda_1 - r_min + gamma*B)/(gamma*K).
     GAMMA, RMIN = 0.05, 0.0
-    def bound_on(tag, alpha, lam1):
-        B = max(alpha, 1 - alpha); tt = data[tag]["t"]
-        bvals = [alpha + (lam1 - RMIN + GAMMA * B) / (GAMMA * (k + 1)) for k in range(len(tt))]
-        return interp(tt, bvals)
-    avg_cols = {tag: interp(data[tag]["t"], data[tag]["avg_dmr"]) for tag, *_ in specs}
-    b2 = bound_on("case2_u50", 0.1, LAM_ANALYTIC)
-    b3 = bound_on("case3", 0.1, LAM_LEARNED)
-    b1 = bound_on("case1", 0.0, LAM_ANALYTIC)
+    def bound(alpha, lam1):
+        B = max(alpha, 1 - alpha)
+        return [alpha + (lam1 - RMIN + GAMMA * B) / (GAMMA * (k + 1)) for k in range(n)]
+    b23, b1 = bound(0.1, LAM_SOFT), bound(0.0, LAM_ANALYTIC)
     path = os.path.join(out_dir, f"{pre}avg_dmr.csv")
     with open(path, "w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["time_s"] + [f"{tag}_avg" for tag, *_ in specs] +
-                   ["bound_case2_lam1", "bound_case3_lam05", "bound_case1_a0"])
-        for i, tg in enumerate(grid):
-            row = [round(tg, 1)] + [round(avg_cols[tag][i], 5) for tag, *_ in specs]
-            row += [round(b2[i], 5), round(b3[i], 5), round(b1[i], 5)]
+        w.writerow(["window"] + [f"{tag}_avg" for tag, *_ in specs] +
+                   ["bound_cases23_lam05", "bound_case1_a0"])
+        for i in range(n):
+            row = [win[i]] + [round(data[tag]["avg_dmr"][i], 5) for tag, *_ in specs]
+            row += [round(b23[i], 5), round(b1[i], 5)]
             w.writerow(row)
     print("saved", path)
+
+    # RAW per-window values (no smoothing / no band): one file per metric, columns = cases.
+    for key, fname in (("util", "raw_util"), ("dmr", "raw_dmr"), ("avg_dmr", "raw_avg_dmr")):
+        path = os.path.join(out_dir, f"{pre}{fname}.csv")
+        with open(path, "w", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(["window"] + [tag for tag, *_ in specs])
+            for i in range(n):
+                w.writerow([win[i]] + [round(data[tag][key][i], 6) for tag, *_ in specs])
+        print("saved", path)
 
 
 def main():
