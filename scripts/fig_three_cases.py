@@ -275,9 +275,70 @@ def plot():
     print("saved", fig_path("combined"))
 
 
+def export_csv():
+    """Write Excel-ready CSVs on a common time grid (cases have different window sizes, so each
+    series is linearly interpolated onto one shared time axis). For util/dmr each case gets
+    (lo, band=hi-lo, mean) so the band is built with the stacked-area trick (plot lo with
+    No-fill, band with a translucent fill, mean as a line). avg_dmr gets per-case cumulative
+    curves plus the three Theorem-1 bounds."""
+    import numpy as np
+    out_dir = os.path.join(FIG_DIR, "excel_data")
+    os.makedirs(out_dir, exist_ok=True)
+    specs = cases()
+    data = {tag: load_series(tag) for tag, *_ in specs}
+    max_t = max(data[tag]["t"][-1] for tag, *_ in specs)
+    grid = list(np.linspace(0.0, max_t, 400))
+    pre = "" if REWARD == "paper" else f"{REWARD}_"
+
+    def interp(tt, y):
+        return list(np.interp(grid, tt, y))
+
+    # band CSVs (util, dmr): time + per-case lo / band / mean (all on the common grid)
+    for key in ("util", "dmr"):
+        header, cols = ["time_s"], {}
+        for tag, *_ in specs:
+            m, lo, hi = _rollband(data[tag][key])
+            tt = data[tag]["t"]
+            cols[tag] = (interp(tt, lo), interp(tt, hi), interp(tt, m))
+            header += [f"{tag}_lo", f"{tag}_band", f"{tag}_mean"]
+        path = os.path.join(out_dir, f"{pre}band_{key}.csv")
+        with open(path, "w", newline="") as fh:
+            w = csv.writer(fh); w.writerow(header)
+            for i, tg in enumerate(grid):
+                row = [round(tg, 1)]
+                for tag, *_ in specs:
+                    lo, hi, m = cols[tag]
+                    row += [round(lo[i], 5), round(hi[i] - lo[i], 5), round(m[i], 5)]
+                w.writerow(row)
+        print("saved", path)
+
+    # avg_dmr CSV: time + per-case cumulative + the three Theorem-1 bounds (Eq. 12)
+    GAMMA, RMIN = 0.05, 0.0
+    def bound_on(tag, alpha, lam1):
+        B = max(alpha, 1 - alpha); tt = data[tag]["t"]
+        bvals = [alpha + (lam1 - RMIN + GAMMA * B) / (GAMMA * (k + 1)) for k in range(len(tt))]
+        return interp(tt, bvals)
+    avg_cols = {tag: interp(data[tag]["t"], data[tag]["avg_dmr"]) for tag, *_ in specs}
+    b2 = bound_on("case2_u50", 0.1, LAM_ANALYTIC)
+    b3 = bound_on("case3", 0.1, LAM_LEARNED)
+    b1 = bound_on("case1", 0.0, LAM_ANALYTIC)
+    path = os.path.join(out_dir, f"{pre}avg_dmr.csv")
+    with open(path, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["time_s"] + [f"{tag}_avg" for tag, *_ in specs] +
+                   ["bound_case2_lam1", "bound_case3_lam05", "bound_case1_a0"])
+        for i, tg in enumerate(grid):
+            row = [round(tg, 1)] + [round(avg_cols[tag][i], 5) for tag, *_ in specs]
+            row += [round(b2[i], 5), round(b3[i], 5), round(b1[i], 5)]
+            w.writerow(row)
+    print("saved", path)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--plot-only", action="store_true")
+    ap.add_argument("--export", action="store_true",
+                    help="also write Excel-ready CSVs (lo/band/mean per case) to figures/excel_data/")
     ap.add_argument("--reward", default="paper", choices=["paper", "v2", "decoupled_sum"],
                     help="RL reward: paper=Eq.1 (default), v2=legacy util-tracking")
     args = ap.parse_args()
@@ -287,6 +348,8 @@ def main():
         for tag, _lbl, _col, over in cases():
             run_case(tag, over)
     plot()
+    if args.export:
+        export_csv()
 
 
 if __name__ == "__main__":
