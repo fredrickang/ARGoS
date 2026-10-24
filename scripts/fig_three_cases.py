@@ -34,10 +34,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASE_CFG = os.path.join(ROOT, "configs", "run_sim.yaml")
 FIG_DIR = os.path.join(ROOT, "paper_results", "figures")
 # Fixed window W = 10 s, N = 2000 windows (adaptive window OFF so every case shares the same
-# window axis). x-axis is the window index throughout.
+# window axis). x-axis is the window index throughout. Duration is N+1 windows: the timer event
+# at exactly N*W coincides with the simulation end and does not fire, so N*W would log only N-1
+# windows; (N+1)*W makes the N-th window complete, giving exactly N logged windows (w_id 0..N-1).
 W_MS = 10_000
 N_WINDOWS = 2000
-DURATION_MS = W_MS * N_WINDOWS
+DURATION_MS = W_MS * (N_WINDOWS + 1)
 
 # Set by main(): 'paper' = Eq.1 (QoS gated on no-miss); 'v2' = legacy util-tracking reward.
 REWARD = "paper"

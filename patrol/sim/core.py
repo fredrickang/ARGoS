@@ -158,6 +158,16 @@ class SchedulerCoreMixin:
                 for task_wcet in tasks_wcet_tables
             ]
 
+        # Controlled profile invalidity for analytical baselines (e.g. FCS under Case-2 invalid
+        # profiles): scale the estimated table that the controller TRUSTS down to a (1-u) fraction
+        # of the true WCET. Jobs still execute against the true table, so the controller
+        # over-allocates. (The RL analytical risk estimator uses its own safety.profile_underest.)
+        _pu = float((self.data.get('ctrl', {}) or {}).get('profile_underest', 0.0) or 0.0)
+        if _pu > 0.0:
+            self.tasks_estimated_tables = [
+                [float(c) * (1.0 - _pu) for c in row] for row in self.tasks_estimated_tables
+            ]
+
         self.fcs_ctrl_param['cur_est_budget'] = self._init_est_budget()
 
         # RL controller parameters
