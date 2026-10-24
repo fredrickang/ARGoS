@@ -287,7 +287,11 @@ def export_csv():
     specs = cases()
     data = {tag: load_series(tag) for tag, *_ in specs}
     max_t = max(data[tag]["t"][-1] for tag, *_ in specs)
-    grid = list(np.linspace(0.0, max_t, 400))
+    # Round grid so x-axis ticks land on clean values: step 5 s, extent rounded up to 500 s.
+    # 500 s = exactly 100 rows -> in Excel set the axis "interval between labels" to 100.
+    STEP = 5.0
+    extent = 500.0 * float(np.ceil(max_t / 500.0))
+    grid = list(np.arange(0.0, extent + STEP, STEP))
     pre = "" if REWARD == "paper" else f"{REWARD}_"
 
     def interp(tt, y):
