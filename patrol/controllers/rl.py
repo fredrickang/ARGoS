@@ -439,17 +439,20 @@ class RlControllerMixin:
 
     def _rl_compute_reward(self):
         w = self.w_id - 1
-        # Paper reward (Eq. 1): aggregate applied QoS, gated on a miss-free window.
-        if getattr(self, "_rl_reward_mode", "v2") == "paper":
+        # 'paper'        = Eq. 1 reward: aggregate applied QoS gated on a miss-free window.
+        # 'qos_ungated'  = aggregate applied QoS with NO miss gating (pure QoS maximization) —
+        #                  a baseline showing that without miss-awareness AND without the shield
+        #                  the RL just drives QoS to the max and keeps overloading.
+        mode = getattr(self, "_rl_reward_mode", "v2")
+        if mode in ("paper", "qos_ungated"):
             qos_sum = 0
             for t in self.tasks:
                 tinfo = t._task_info
                 if not getattr(tinfo, "active", True):
                     continue
                 qos_sum += tinfo.win_log.get(w, {}).get("qos_level", 0)
-            reward, _ = self.rl_agent.compute_reward_qos_gated(
-                qos_sum, dmr=self.window_log[w]["dmr"]
-            )
+            dmr = None if mode == "qos_ungated" else self.window_log[w]["dmr"]
+            reward, _ = self.rl_agent.compute_reward_qos_gated(qos_sum, dmr=dmr)
             self.window_log[w]["reward"] = reward
             return reward
 

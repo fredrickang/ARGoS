@@ -168,6 +168,20 @@ class SchedulerCoreMixin:
                 [float(c) * (1.0 - _pu) for c in row] for row in self.tasks_estimated_tables
             ]
 
+        # Arbitrary (random) profile, unrelated to the true WCET: demonstrates a profile-dependent
+        # controller (e.g. FCS) attempted under Case 3 (no valid profile) — it is forced to trust
+        # a made-up profile. Per task: QoS 0 = 0, then random monotone exec = U*period with
+        # U ~ Uniform(0,1) sorted. Jobs still execute against the TRUE table.
+        if (self.data.get('ctrl', {}) or {}).get('profile_random'):
+            prng = random.Random(int(self.data.get('ctrl', {}).get('profile_seed') or 12345) + 777)
+            rand_tables = []
+            for t_id, t in enumerate(self.tasks):
+                period = float(getattr(t._task_info, 'period', 1000) or 1000)
+                L = len(self.tasks_estimated_tables[t_id])
+                utils = sorted(prng.uniform(0.0, 1.0) for _ in range(max(0, L - 1)))
+                rand_tables.append([0.0] + [round(u * period, 3) for u in utils])
+            self.tasks_estimated_tables = rand_tables
+
         self.fcs_ctrl_param['cur_est_budget'] = self._init_est_budget()
 
         # RL controller parameters

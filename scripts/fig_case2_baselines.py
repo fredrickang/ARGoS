@@ -46,11 +46,13 @@ VARIANTS = [
         safety=dict(mode="rcrl", score="analytical", profile="invalid", profile_underest=UNDEREST,
                     target_miss_alpha=ALPHA, lambda_init=LAM1, rmin=0.0, mode_change=False,
                     fallback_start_window=0, loss_mode="releasable"))),
-    ("noval", "No validation (RL only)", "#D7191C", dict(
-        mode="rl",
+    ("noval", "No validation (RL, QoS-only reward)", "#D7191C", dict(
+        mode="rl", reward="qos_ungated",     # pure QoS max, no miss gating -> keeps overloading
         safety=dict(mode="none", loss_mode="releasable"))),
-    ("fcs", "FCS (invalid profile)", "#B35806", dict(
+    ("fcs", "FCS (invalid profile, 50%)", "#B35806", dict(
         mode="fcs", profile_underest=UNDEREST)),
+    ("fcs_rand", "FCS (random profile / Case 3)", "#5E3C99", dict(
+        mode="fcs", profile_random=True)),
 ]
 
 
@@ -62,9 +64,13 @@ def build_cfg(over, out_dir):
     cfg["controller"]["dynamic_mode"] = 0
     cfg["controller"].setdefault("adaptive_window", {})["enabled"] = False
     cfg["controller"].setdefault("rl", {})["reward"] = "paper"
-    # merge overrides (safety is a nested dict -> replace wholesale for a clean per-variant setup)
+    # merge overrides. 'reward' routes into controller.rl; 'safety' replaces the block wholesale
+    # (clean per-variant setup); everything else is set on controller directly.
     for k, v in over.items():
-        cfg["controller"][k] = v
+        if k == "reward":
+            cfg["controller"].setdefault("rl", {})["reward"] = v
+        else:
+            cfg["controller"][k] = v
     return cfg
 
 
@@ -83,11 +89,12 @@ def load_series(tag):
                   key=os.path.getmtime)
     if not hits:
         raise FileNotFoundError(f"no windows.csv for {tag}")
-    t, util, dmr = [], [], []
+    t, util, dmr, qos = [], [], [], []
     for r in csv.DictReader(open(hits[-1])):
         try:
             t.append(int(float(r["w_id"])))
             util.append(float(r["act_util"]))
+            qos.append(float(r.get("avg_qos") or 0))
             nrel = float(r.get("n_job_releasable") or 0)
             mk = (float(r.get("n_miss_jobs") or 0) / nrel) if nrel > 0 else float(r.get("dmr") or 0)
             dmr.append(min(1.0, mk))
@@ -96,7 +103,7 @@ def load_series(tag):
     avg, s = [], 0.0
     for i, d in enumerate(dmr):
         s += d; avg.append(s / (i + 1))
-    return {"t": t, "util": util, "dmr": dmr, "avg_dmr": avg}
+    return {"t": t, "util": util, "qos": qos, "dmr": dmr, "avg_dmr": avg}
 
 
 def _smooth(y, w=21):
@@ -118,9 +125,10 @@ def plot_and_export():
     os.makedirs(FIG_DIR, exist_ok=True); os.makedirs(DATA_DIR, exist_ok=True)
     data = {tag: load_series(tag) for tag, *_ in VARIANTS}
 
-    # ---- combined 3-panel: util / per-window DMR / cumulative avg DMR (all mean lines) ----
-    fig, axes = plt.subplots(3, 1, figsize=(10, 11), sharex=True)
+    # ---- combined 4-panel: util / avg QoS / per-window DMR / cumulative avg DMR ----
+    fig, axes = plt.subplots(4, 1, figsize=(10, 13), sharex=True)
     panels = [("util", "Utilization", "util", None),
+              ("qos", "Average QoS level (delivered service quality)", "avg QoS", None),
               ("dmr", "Deadline-miss ratio M_k (per window)", "M_k", ALPHA),
               ("avg_dmr", "Average deadline-miss ratio (cumulative)", "mean M_k", ALPHA)]
     for ax, (key, title, ylab, hl) in zip(axes, panels):
@@ -141,7 +149,7 @@ def plot_and_export():
             ax.spines[sp].set_visible(False)
     axes[0].legend(loc="best", fontsize=8, framealpha=0.9)
     axes[-1].set_xlabel("window index")
-    fig.suptitle("Case 2 (invalid profile, 50% underest.) — ARGoS vs baselines", fontsize=12, y=0.997)
+    fig.suptitle("ARGoS vs baselines (Case 2 invalid + Case 3 random profile)", fontsize=12, y=0.997)
     fig.tight_layout(rect=[0, 0, 1, 0.99])
     p = os.path.join(FIG_DIR, "case2_baselines.png")
     fig.savefig(p, dpi=140); plt.close(fig); print("saved", p)
@@ -155,7 +163,7 @@ def plot_and_export():
     ax.axhline(ALPHA, color="black", ls="--", lw=1.0, alpha=0.7)
     ax.text(ax.get_xlim()[1], ALPHA, f"  α={ALPHA}", va="center", fontsize=8)
     ax.set_ylim(0, 1.0)
-    ax.set_title("Case 2 cumulative deadline-miss ratio — ARGoS vs baselines", fontsize=11)
+    ax.set_title("Cumulative deadline-miss ratio — ARGoS vs baselines", fontsize=11)
     ax.set_ylabel("mean M_k"); ax.set_xlabel("window index")
     ax.grid(True, ls="--", alpha=0.3, lw=0.5)
     for sp in ("top", "right"):
@@ -168,8 +176,8 @@ def plot_and_export():
     # ---- raw CSVs (window + per-variant), one per metric ----
     n = min(len(data[tag]["t"]) for tag, *_ in VARIANTS)
     win = data["argos"]["t"][:n]
-    for key, fname in (("util", "case2_raw_util"), ("dmr", "case2_raw_dmr"),
-                       ("avg_dmr", "case2_raw_avg_dmr")):
+    for key, fname in (("util", "case2_raw_util"), ("qos", "case2_raw_qos"),
+                       ("dmr", "case2_raw_dmr"), ("avg_dmr", "case2_raw_avg_dmr")):
         path = os.path.join(DATA_DIR, f"{fname}.csv")
         with open(path, "w", newline="") as fh:
             w = csv.writer(fh); w.writerow(["window"] + [tag for tag, *_ in VARIANTS])
