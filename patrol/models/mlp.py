@@ -63,7 +63,8 @@ def compute_auc(y_true: np.ndarray, y_score: np.ndarray) -> float:
 
 def fit_temperature(model: nn.Module, x_val: torch.Tensor, y_val: torch.Tensor) -> float:
     """Temperature scaling: fit a single scalar T minimizing val BCE so sigmoid(logit/T)
-    is a calibrated probability (important because RCRL compares 1 - miss_prob to lambda)."""
+    is a calibrated probability (important because the learned risk r = miss_prob is
+    compared against the acceptance threshold lambda)."""
     model.eval()
     with torch.no_grad():
         logits = model(x_val)
