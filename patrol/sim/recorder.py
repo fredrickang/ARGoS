@@ -24,11 +24,11 @@ class RunRecorder:
     # Fixed column schema for windows.csv. Missing keys are written blank, so the same
     # schema serves every controller mode (fcs/rl/profile).
     WINDOW_COLUMNS = [
-        "w_id", "t_start", "t_end",
+        "w_id", "t_start", "t_end", "w_sz",
         "act_util", "ref_util", "util_err",
-        "n_jobs", "n_miss_jobs", "dmr", "miss",
+        "n_jobs", "n_miss_jobs", "n_job_releasable", "dmr", "miss", "eps_carry",
         "avg_qos", "value", "reward",
-        "safe_fallback", "rcrl_lambda", "guard_mode", "shield_active",
+        "safe_fallback", "rcrl_lambda", "risk_score", "guard_mode", "shield_active",
     ]
 
     def __init__(self, run_dir):
@@ -57,18 +57,22 @@ class RunRecorder:
             "w_id": w_id,
             "t_start": wr[0],
             "t_end": wr[1],
+            "w_sz": entry.get("w_sz"),
             "act_util": entry.get("act_util"),
             "ref_util": entry.get("ref_util"),
             "util_err": entry.get("util_err"),
             "n_jobs": entry.get("n_jobs"),
             "n_miss_jobs": entry.get("n_miss_jobs"),
+            "n_job_releasable": entry.get("n_job_releasable"),
             "dmr": dmr,
             "miss": 1 if dmr > 0.0 else 0,
+            "eps_carry": entry.get("eps_carry"),
             "avg_qos": entry.get("avg_qos"),
             "value": entry.get("value"),
             "reward": entry.get("reward"),
             "safe_fallback": "" if sf is None else int(bool(sf)),
             "rcrl_lambda": entry.get("rcrl_lambda"),
+            "risk_score": entry.get("risk_score"),
             "guard_mode": guard_mode or "",
             "shield_active": "" if entry.get("shield_active") is None else int(bool(entry.get("shield_active"))),
         }

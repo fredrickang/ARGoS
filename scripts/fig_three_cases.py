@@ -108,7 +108,12 @@ def latest_windows_csv(tag):
 
 
 def load_series(tag):
-    """Return dict with t (seconds), util, dmr, avg_dmr (cumulative mean)."""
+    """Return dict with t (seconds), util, dmr, avg_dmr (cumulative mean).
+
+    'dmr' is the per-window miss ratio M_k = missed / max-releasable jobs (paper Eq. 1) — the
+    quantity Theorem 1 bounds — computed from n_miss_jobs / n_job_releasable when available,
+    else the recorded terminate-membership dmr.
+    """
     path = latest_windows_csv(tag)
     if not path:
         raise FileNotFoundError(f"no windows.csv for {tag}")
@@ -117,7 +122,12 @@ def load_series(tag):
         try:
             t.append(float(r["t_end"]) / 1000.0)   # ms -> s
             util.append(float(r["act_util"]))
-            dmr.append(float(r["dmr"]))
+            nrel = float(r.get("n_job_releasable") or 0)
+            if nrel > 0:
+                mk = float(r.get("n_miss_jobs") or 0) / nrel
+            else:
+                mk = float(r.get("dmr") or 0)
+            dmr.append(min(1.0, mk))
         except (KeyError, ValueError):
             continue
     avg, s = [], 0.0
