@@ -26,8 +26,8 @@ controller:
   mode: rl # fcs / rl / profile
   profile_model_path: ./patrol/models/checkpoints/model.pt
   dynamic_mode: 0 # 0: static  1: ref util change  2: available budget  3: task set
-  ref_util: 0.7
-  ref_dmr: 0.01
+  ref_util: 0.9
+  ref_dmr: 0.1
   profile_seed: 12345
   save_rl_samples: false
 

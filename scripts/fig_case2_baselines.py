@@ -41,8 +41,10 @@ GAMMA, RMIN, LAM1 = 0.05, 0.0, 0.5         # ARGoS risk-controller params (for t
 
 # (tag, label, color, controller-overrides). controller-overrides merged into cfg['controller'].
 VARIANTS = [
+    # argos and noval share the SAME reward (qos_ungated, QoS-only) so the only difference is
+    # the SafetyGuard: ARGoS bounds M_k even under a reckless QoS-max reward, noval does not.
     ("argos", "ARGoS (RL + SafetyGuard)", "#0B7A75", dict(
-        mode="rl",
+        mode="rl", reward="qos_ungated",
         safety=dict(mode="rcrl", score="analytical", profile="invalid", profile_underest=UNDEREST,
                     target_miss_alpha=ALPHA, lambda_init=LAM1, rmin=0.0, mode_change=False,
                     fallback_start_window=0, loss_mode="releasable"))),
