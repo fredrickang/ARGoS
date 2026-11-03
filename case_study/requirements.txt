@@ -1,0 +1,8 @@
+# ARGoS-VA edge video-analytics prototype
+# ARGoS core (RL agent + SafetyGuard) is reused from the patrol package:
+#   pip install -e ../PATROL_refactored
+torch
+numpy
+pyyaml
+opencv-python        # frame decode from recorded files / RTSP
+# ultralytics        # detector ladder (YOLOv8) — pin once the model family is chosen

@@ -1,0 +1,8 @@
+[project]
+name = "argos-va"
+version = "0.0.1"
+description = "Edge video-analytics case study for the ARGoS QoS scheduling framework"
+requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+include = ["argos_va*"]

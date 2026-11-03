@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+# large / regenerable artifacts
+data/*.mp4
+data/*.mkv
+data/*.avi
+models/*.pt
+models/*.onnx
+models/profiles/*.json
+results/
+outputs/
