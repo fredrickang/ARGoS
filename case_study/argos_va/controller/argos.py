@@ -17,24 +17,24 @@ from pathlib import Path
 
 import numpy as np
 
-# Reuse the ARGoS core (RL agent + adaptive risk controller) from the *refactored* project:
-# the importable package `patrol` lives inside the sibling PATROL_refactored/ tree. Prepend
-# that path so `import patrol` resolves there, and assert the source to rule out any other
-# `patrol` on sys.path (the legacy /root/PATROL tree is flat and has no `patrol/` package).
-_PATROL_REFACTORED = Path(__file__).resolve().parents[3] / "PATROL_refactored"
-if not _PATROL_REFACTORED.is_dir():
-    raise RuntimeError(f"PATROL_refactored not found at {_PATROL_REFACTORED}")
-if str(_PATROL_REFACTORED) not in sys.path:
-    sys.path.insert(0, str(_PATROL_REFACTORED))
+# Reuse the ARGoS core (RL agent + adaptive risk controller) from the main `patrol` package,
+# which lives at the root of the ARGoS repo (this case study is a subdirectory of it). Prepend
+# that root so `import patrol` resolves there, and assert the source to rule out any other
+# `patrol` on sys.path.
+_ARGOS_ROOT = Path(__file__).resolve().parents[3]   # .../ARGoS  (contains patrol/)
+if not (_ARGOS_ROOT / "patrol").is_dir():
+    raise RuntimeError(f"patrol package not found under ARGoS root {_ARGOS_ROOT}")
+if str(_ARGOS_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ARGOS_ROOT))
 from patrol.rl.dqn import DQNAgent                       # noqa: E402
 from patrol.controllers.safety import AdaptiveRiskGuard  # noqa: E402
 
 import patrol as _patrol  # noqa: E402
-assert Path(_patrol.__file__).resolve().parent.parent == _PATROL_REFACTORED, (
-    f"`patrol` resolved to {_patrol.__file__}, expected it under {_PATROL_REFACTORED}")
+assert Path(_patrol.__file__).resolve().parent.parent == _ARGOS_ROOT, (
+    f"`patrol` resolved to {_patrol.__file__}, expected it under {_ARGOS_ROOT}")
 
 from ..scheduler.model import Task, WindowObs
-from .classifier import UtilClassifier
+from .classifier import UtilRisk
 from .fallback import grouped_fallback
 
 
@@ -61,10 +61,13 @@ class ExecMeanTracker:
 
 class ArgosController:
     def __init__(self, tasks: list[Task], num_levels: int, *,
-                 alpha: float = 0.1, gamma: float = 0.05, lambda_init: float = 0.5,
+                 alpha: float = 0.1, gamma: float = 0.05, lambda_init: float = 1.0,
                  u_ref: float = 0.9, init_level: int = 1,
                  safety: bool = True, seed: int = 0,
                  save_path: str = "results/models/argos_dqn.pth"):
+        # lambda_init=1.0 is the analytical EDF threshold (accept iff utilization <= 1), matching
+        # the main ARGoS convention for the analytical risk estimator (r = Σ C_i/T_i). It then
+        # adapts per window via λ ← λ − γ(M_k − α) in AdaptiveRiskGuard.
         self.tasks = sorted(tasks, key=lambda t: t.task_id)
         self.N = len(self.tasks)
         self.L = num_levels
@@ -78,7 +81,7 @@ class ArgosController:
         self.last_decision = tuple(init_level for _ in self.tasks)
 
         self.tracker = ExecMeanTracker()
-        self.classifier = UtilClassifier(self.periods, self.tracker)
+        self.risk_est = UtilRisk(self.periods, self.tracker)
         self.guard = AdaptiveRiskGuard(gamma=gamma, alpha=alpha, lambda_init=lambda_init,
                                        fallback_enabled=safety)
 
@@ -109,11 +112,11 @@ class ArgosController:
 
     # ---- validation ----
     def _accepted(self, decision: tuple[int, ...]) -> bool:
-        if all(q == 0 for q in decision):    # d_safe: f = +inf, accepted for every threshold
+        if all(q == 0 for q in decision):    # d_safe: risk = 0 (lowest), accepted for every λ
             return True
         if not self.safety_on:
             return True
-        return self.guard.is_accepted(self.classifier.miss_prob(decision))
+        return self.guard.is_accepted(self.risk_est.risk(decision))
 
     # ---- per-window hooks used by EdfScheduler.run_windowed ----
     def decide(self, k: int) -> tuple[int, ...]:
@@ -139,7 +142,7 @@ class ArgosController:
             if r.start_ms is not None and r.exec_ms > 0:
                 self.tracker.update(r.task_id, r.level, r.exec_ms)
 
-        if self.safety_on:                  # adaptive risk control: λ ← λ + γ(ℓ − α)
+        if self.safety_on:                  # adaptive risk control: λ ← λ − γ(M_k − α)
             self.guard.update_on_outcome(loss=obs.loss)
 
         self.u_prev, self.m_prev = obs.utilization, obs.loss
